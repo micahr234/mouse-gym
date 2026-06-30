@@ -1,0 +1,656 @@
+"""Public step API and rollout contract types for mouse-gym ↔ mouse-core."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Required, TypedDict, cast
+
+import gymnasium as gym
+import numpy as np
+import torch
+
+ACTION_KEY = "action"
+OBS_KEY = "observation"
+
+TIME_KEY = "time"
+
+DONE_RUNNING             = 0
+DONE_EPISODE_TERMINATED  = 1
+DONE_EPISODE_TRUNCATED   = 2
+DONE_TASK_TERMINATED     = 3
+DONE_TASK_TRUNCATED      = 4
+
+
+def _torch_dtype_for_np_dtype(dtype: Any) -> torch.dtype:
+    """Map a numpy dtype to the closest torch dtype available."""
+    dt = np.dtype(dtype)
+    dtype_map = {
+        np.dtype(np.bool_): torch.bool,
+        np.dtype(np.uint8): torch.uint8,
+        np.dtype(np.int8): torch.int8,
+        np.dtype(np.int16): torch.int16,
+        np.dtype(np.int32): torch.int32,
+        np.dtype(np.int64): torch.int64,
+        np.dtype(np.float16): torch.float16,
+        np.dtype(np.float32): torch.float32,
+        np.dtype(np.float64): torch.float64,
+    }
+    if dt in dtype_map:
+        return dtype_map[dt]
+    if np.issubdtype(dt, np.floating):
+        return torch.float32
+    if np.issubdtype(dt, np.integer) or np.issubdtype(dt, np.bool_):
+        return torch.int64
+    return torch.float32
+
+
+def _torch_dtype_for_space(space: gym.Space) -> torch.dtype:
+    """Map a Gymnasium space dtype to the torch dtype used to store its samples."""
+    raw = getattr(space, "dtype", None)
+    if raw is None:
+        return torch.float32
+    return _torch_dtype_for_np_dtype(raw)
+
+
+@dataclass
+class FieldSpec:
+    """Describes one field in an output or input dict.
+
+    ``dtype`` is the Python/torch type of the value (e.g. ``torch.float32``,
+    ``torch.int64``, ``int``, ``float``, ``np.float64``). ``shape`` is the tensor
+    shape as a tuple; ``()`` for scalars and plain Python primitives.
+    """
+
+    dtype: torch.dtype | type
+    shape: tuple[int, ...]
+
+
+@dataclass
+class OutputSpec:
+    """Mirrors the output dict: one attribute per key in ``outputs[i]``.
+
+    ``observation`` is a single :class:`FieldSpec` for standard observation spaces, or
+    a ``dict[str, FieldSpec]`` for ``gym.spaces.Dict`` observation spaces.
+
+    The underlying Gymnasium ``info`` dict is forwarded verbatim in the step output
+    under the ``info`` key. No env-specific filtering is applied.
+    """
+
+    time: FieldSpec
+    observation: FieldSpec | dict[str, FieldSpec]
+    reward: FieldSpec
+    done: FieldSpec
+    episode_index: FieldSpec
+    task_index: FieldSpec
+
+
+@dataclass
+class InputSpec:
+    """Mirrors the input dict: one attribute per key in ``inputs[i]``.
+
+    ``action`` describes the single ``"action"`` tensor. Its ``dtype`` and shape
+    mirror the underlying Gymnasium action space where possible.
+    """
+
+    action: FieldSpec
+
+
+class StepOutput(TypedDict, total=False):
+    """All per-env fields for one step (single-env view, ``outputs[i]``).
+
+    Tensor fields are ``torch.Tensor``; other fields are plain Python types.
+    The ``observation`` field is a tensor for ordinary observation spaces, or a
+    ``dict[str, torch.Tensor]`` for ``gym.spaces.Dict`` observation spaces.
+
+    The underlying Gymnasium ``info`` dict is forwarded verbatim under ``info``.
+    For example, ``outputs[i]["info"]["q_star"]``, ``outputs[i]["info"]["map"]``,
+    and ``outputs[i]["info"]["ns_params"]`` when the env emits those keys.
+    """
+
+    time: Required[torch.Tensor]
+    observation: torch.Tensor | dict[str, torch.Tensor]
+    reward: Required[torch.Tensor]
+    done: Required[torch.Tensor]
+    episode_index: Required[int]
+    task_index: Required[int]
+    info: dict[str, Any]
+
+
+class Tracker:
+    """Accumulates episode statistics for a single :class:`SingleEnv`.
+
+    :class:`SingleEnv` feeds completed-episode results automatically. Call
+    :meth:`clear` to wipe all accumulated data (e.g. between evaluation runs).
+
+    Attributes
+    ----------
+    episode_cum_rewards:
+        List of raw (unscaled) cumulative rewards for every episode completed
+        since the last :meth:`clear` call.
+    episode_lengths:
+        List of episode step counts for every completed episode since the last
+        :meth:`clear` call.
+    """
+
+    def __init__(self) -> None:
+        self._episode_cum_rewards: list[float] = []
+        self._episode_lengths: list[float] = []
+
+    def _record(self, cum_reward: float, length: float) -> None:
+        self._episode_cum_rewards.append(cum_reward)
+        self._episode_lengths.append(length)
+
+    def clear(self) -> None:
+        """Wipe all accumulated episode data."""
+        self._episode_cum_rewards = []
+        self._episode_lengths = []
+
+    @property
+    def episode_cum_rewards(self) -> list[float]:
+        """Raw cumulative rewards for completed episodes."""
+        return self._episode_cum_rewards
+
+    @property
+    def episode_lengths(self) -> list[float]:
+        """Episode lengths (step counts) for completed episodes."""
+        return self._episode_lengths
+
+
+class _EnvInstance:
+    """Internal: wraps a single ``gym.Env`` with the mouse-gym step protocol.
+
+    Each env instance manages its own episode state — episode time, index, and
+    cumulative rewards — and implements the two-frame boundary sequence: a
+    terminal step (``done=1/2``) followed by a reset frame (``done=0``,
+    ``time=0``) on the next ``step()`` call, with the user's action on the
+    reset-frame call silently ignored.
+    """
+
+    def __init__(
+        self,
+        env: gym.Env,
+        name: str,
+        *,
+        reset_reward: float = 0.0,
+        episode_reset_options: dict | None = None,
+        task_reset_options: dict | None = None,
+        episodes_per_task: int,
+    ):
+        self._env = env
+        self._name = name
+        self._reset_reward = float(reset_reward)
+        self._episode_reset_options = dict(episode_reset_options or {})
+        self._task_reset_options = dict(task_reset_options or {})
+        self._episodes_per_task = int(episodes_per_task)
+
+        # Episode state
+        self._needs_initial_reset = True
+        self._autoreset_pending = False
+        self._task_done_pending = False
+        self._episode_time = 0
+        self._episode_index = 0
+        self._task_episode_count = 0  # episodes completed in current task
+        self._task_index = 0
+        self._episode_cum_reward = 0.0
+
+        # Spec
+        self._obs_channel, self._obs_dtypes, self._output_spec, self._input_spec = (
+            self._build_specs()
+        )
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def output_spec(self) -> OutputSpec:
+        return self._output_spec
+
+    @property
+    def input_spec(self) -> InputSpec:
+        return self._input_spec
+
+    def _build_specs(
+        self,
+    ) -> tuple[
+        str | None,
+        dict[str, torch.dtype],
+        OutputSpec,
+        InputSpec,
+    ]:
+        obs_space = self._env.observation_space
+        act_space = self._env.action_space
+
+        # --- observation side ---
+        if isinstance(obs_space, gym.spaces.Dict):
+            obs_dtypes: dict[str, torch.dtype] = {
+                key: _torch_dtype_for_space(sub)
+                for key, sub in obs_space.spaces.items()
+            }
+            single_channel = None
+            obs_field: FieldSpec | dict[str, FieldSpec] = {
+                key: FieldSpec(
+                    dtype=obs_dtypes[key],
+                    shape=tuple(getattr(sub, "shape", ()) or ()),
+                )
+                for key, sub in obs_space.spaces.items()
+            }
+        else:
+            obs_torch_dtype = _torch_dtype_for_space(obs_space)
+            obs_dtypes = {OBS_KEY: obs_torch_dtype}
+            single_channel = OBS_KEY
+            obs_shape = tuple(getattr(obs_space, "shape", ()) or ())
+            obs_field = FieldSpec(dtype=obs_torch_dtype, shape=obs_shape)
+
+        # --- action side ---
+        act_torch_dtype = _torch_dtype_for_space(act_space)
+        if isinstance(act_space, gym.spaces.Discrete):
+            act_shape: tuple[int, ...] = ()
+        elif isinstance(act_space, gym.spaces.MultiDiscrete):
+            act_shape = (len(act_space.nvec),)
+        else:
+            act_shape = tuple(getattr(act_space, "shape", ()) or ())
+
+        output_spec = OutputSpec(
+            time=FieldSpec(dtype=torch.int64, shape=()),
+            observation=obs_field,
+            reward=FieldSpec(dtype=torch.float32, shape=()),
+            done=FieldSpec(dtype=torch.int64, shape=()),
+            episode_index=FieldSpec(dtype=int, shape=()),
+            task_index=FieldSpec(dtype=int, shape=()),
+        )
+        input_spec = InputSpec(action=FieldSpec(dtype=act_torch_dtype, shape=act_shape))
+        return single_channel, obs_dtypes, output_spec, input_spec
+
+    def _action_tensor(self, value: Any, *, dtype: torch.dtype) -> torch.Tensor:
+        arr = np.asarray(value).flatten()
+        if arr.size == 1:
+            return torch.tensor(arr.item(), dtype=dtype)
+        return torch.tensor(arr, dtype=dtype)
+
+    def sample_random_input(self) -> dict:
+        """Sample a random action as a ``dict`` with a flat ``"action"`` key."""
+        raw = self._env.action_space.sample()
+        act_dtype = cast(torch.dtype, self._input_spec.action.dtype)
+        return {ACTION_KEY: self._action_tensor(raw, dtype=act_dtype)}
+
+    def _require_input(self, input_dict: Any) -> np.ndarray:
+        """Extract and validate the ``"action"`` key from an input dict."""
+        if not isinstance(input_dict, dict):
+            raise ValueError(
+                f"input must be a dict with an '{ACTION_KEY}' entry, "
+                f"got {type(input_dict).__name__}."
+            )
+        if ACTION_KEY not in input_dict:
+            raise ValueError(
+                f"input must contain the '{ACTION_KEY}' key; "
+                f"got keys {sorted(input_dict.keys())}."
+            )
+        value = cast(Any, input_dict)[ACTION_KEY]
+        if hasattr(value, "numpy"):
+            return value.numpy()
+        return np.asarray(value)
+
+    def _prepare_action(self, action_np: np.ndarray) -> Any:
+        """Convert a numpy action array to the format expected by ``gym.Env.step``."""
+        space = self._env.action_space
+        if isinstance(space, gym.spaces.Discrete):
+            return int(np.asarray(action_np).reshape(-1)[0])
+        if isinstance(space, gym.spaces.MultiDiscrete):
+            dtype = getattr(space, "dtype", np.int64)
+            return np.asarray(action_np, dtype=dtype).reshape(-1)
+        dtype = getattr(space, "dtype", None)
+        arr = np.asarray(action_np, dtype=dtype) if dtype is not None else np.asarray(action_np)
+        return arr.reshape(getattr(space, "shape", ()) or ())
+
+    def _reward_tensor(self, raw_reward: Any) -> torch.Tensor:
+        return torch.as_tensor(raw_reward)
+
+    def _obs_entry(self, obs: Any) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
+        """Build observation field(s) from a single-env observation."""
+        if isinstance(obs, dict):
+            return {OBS_KEY: {k: torch.as_tensor(np.asarray(v)) for k, v in obs.items()}}
+        channel = cast(str, self._obs_channel)
+        return {channel: torch.as_tensor(np.asarray(obs))}
+
+    def _reset_options_for_boundary(self, *, task_start: bool) -> dict[str, Any]:
+        options = dict(self._episode_reset_options)
+        if task_start:
+            options.update(self._task_reset_options)
+        return options
+
+    def _do_reset(self, *, task_start: bool) -> tuple[dict, None]:
+        """Call env.reset() and return the reset-frame output; no episode result."""
+        reset_options = self._reset_options_for_boundary(task_start=task_start)
+        reset_kwargs = {"options": reset_options} if reset_options else {}
+        obs, info = self._env.reset(**reset_kwargs)
+        self._episode_time = 0
+        self._episode_cum_reward = 0.0
+
+        output: dict = {
+            TIME_KEY: torch.tensor(0, dtype=torch.int64),
+            "reward": torch.tensor(self._reset_reward, dtype=torch.float32),
+            "done": torch.tensor(DONE_RUNNING, dtype=torch.int64),
+            "episode_index": self._episode_index,
+            "task_index": self._task_index,
+        }
+        output.update(self._obs_entry(obs))
+
+        output["info"] = info
+
+        return output, None
+
+    def step(self, input_dict: dict) -> tuple[dict, tuple[float, float] | None]:
+        """Step this env instance; return ``(output, episode_result)``.
+
+        ``episode_result`` is ``(cum_reward, length)`` when the episode ended on this
+        step, or ``None`` otherwise (including reset frames).
+        """
+        if self._needs_initial_reset:
+            self._needs_initial_reset = False
+            return self._do_reset(task_start=True)
+
+        if self._autoreset_pending:
+            self._autoreset_pending = False
+            self._episode_index += 1
+            task_start = False
+            if self._task_done_pending:
+                self._task_done_pending = False
+                self._task_index += 1
+                self._task_episode_count = 0
+                task_start = True
+            else:
+                self._task_episode_count += 1
+            return self._do_reset(task_start=task_start)
+
+        # Regular step — validate and unpack input
+        action_np = self._require_input(input_dict)
+        action = self._prepare_action(action_np)
+        obs, raw_reward, terminated, truncated, info = self._env.step(action)
+
+        # Track raw cumulative reward (unscaled) for tracker
+        raw_reward_f = float(raw_reward)
+        self._episode_cum_reward += raw_reward_f
+
+        self._episode_time += 1
+
+        # Determine done code — codes 3/4 fire when this episode is the last in the task.
+        # episodes_per_task == 0 means unlimited: task boundary never fires automatically.
+        task_done = self._episodes_per_task > 0 and (
+            self._task_episode_count + 1 == self._episodes_per_task
+        )
+        if terminated:
+            done = DONE_TASK_TERMINATED if task_done else DONE_EPISODE_TERMINATED
+        elif truncated:
+            done = DONE_TASK_TRUNCATED if task_done else DONE_EPISODE_TRUNCATED
+        else:
+            done = DONE_RUNNING
+
+        output: dict = {
+            TIME_KEY: torch.tensor(self._episode_time, dtype=torch.int64),
+            "reward": self._reward_tensor(raw_reward),
+            "done": torch.tensor(done, dtype=torch.int64),
+            "episode_index": self._episode_index,
+            "task_index": self._task_index,
+        }
+        output.update(self._obs_entry(obs))
+
+        output["info"] = info
+
+        episode_result: tuple[float, float] | None
+        if done != DONE_RUNNING:
+            episode_result = (self._episode_cum_reward, float(self._episode_time))
+            self._autoreset_pending = True
+            self._task_done_pending = task_done
+        else:
+            episode_result = None
+
+        return output, episode_result
+
+    def render(self) -> list:
+        """Return rendered frames from this env instance."""
+        frames = self._env.render()
+        if frames is None:
+            return []
+        if isinstance(frames, (list, tuple)):
+            return list(frames)
+        return [frames]
+
+    def close(self) -> None:
+        self._env.close()
+
+
+class SingleEnv:
+    """A standalone environment wrapping one gym env with the mouse-gym rollout protocol.
+
+    Construct via :func:`mouse_gym.make_env` with a single :class:`EnvConfig`.
+
+    ``step`` implements the reset-free mouse-gym protocol: the first call performs an
+    internal reset and returns the initial observation (``done=0``, ``time=0``,
+    input ignored). After each episode ends, the next ``step`` call is also a reset
+    frame (input ignored). Public ``reset()`` raises ``NotImplementedError``.
+
+    Episode statistics are accumulated automatically in :attr:`tracker`
+    (:class:`Tracker`). Call ``env.tracker.clear()`` to reset the accumulated
+    data between evaluation runs.
+
+    Every output dict contains:
+        time (int64 tensor)       — step index within the episode (0-based)
+        observation (tensor/dict) — the observation emitted by the env
+        reward (tensor)           — raw env reward from the underlying Gymnasium step
+        done (int64 tensor)       — 0=running, 1=episode terminated, 2=episode truncated,
+                                    3=task terminated, 4=task truncated
+        episode_index (int)       — episode counter
+        task_index (int)          — task counter
+        info (dict)               — Gymnasium info dict from the underlying env step/reset
+    """
+
+    def __init__(self, env_instance: _EnvInstance) -> None:
+        self._env_instance = env_instance
+        self._tracker = Tracker()
+
+    @property
+    def tracker(self) -> Tracker:
+        """Episode-statistics tracker; accumulates results from every completed episode.
+
+        Call ``env.tracker.clear()`` to wipe accumulated data between evaluation runs.
+        """
+        return self._tracker
+
+    @property
+    def name(self) -> str:
+        """Name of this env instance."""
+        return self._env_instance.name
+
+    @property
+    def output_spec(self) -> OutputSpec:
+        """Output contract for this env."""
+        return self._env_instance.output_spec
+
+    @property
+    def input_spec(self) -> InputSpec:
+        """Input contract for this env."""
+        return self._env_instance.input_spec
+
+    @property
+    def action_space(self) -> gym.Space:
+        """The underlying Gymnasium action space."""
+        return self._env_instance._env.action_space
+
+    @property
+    def observation_space(self) -> gym.Space:
+        """The underlying Gymnasium observation space."""
+        return self._env_instance._env.observation_space
+
+    def reset(self, **_kwargs: Any) -> None:
+        """mouse-gym rollouts reset internally; use ``step()`` instead."""
+        raise NotImplementedError(
+            "SingleEnv does not support public reset(); call step() to use the "
+            "reset-free mouse-gym rollout protocol."
+        )
+
+    def sample_random_input(self) -> dict:
+        """Sample a random action dict for this env. Pass directly to ``step()``."""
+        return self._env_instance.sample_random_input()
+
+    def step(self, input: dict) -> dict:
+        """Step the env and return one output dict.
+
+        On the first call and on any call immediately after an episode ends, the
+        input is ignored and a reset frame is returned instead.
+
+        Completed-episode statistics are recorded automatically into :attr:`tracker`.
+        Call ``env.tracker.clear()`` to reset between runs.
+        """
+        output, episode_result = self._env_instance.step(input)
+        if episode_result is not None:
+            cum_reward, length = episode_result
+            self._tracker._record(cum_reward, length)
+        return output
+
+    def render(self) -> list:
+        """Return rendered frames from this env instance."""
+        return self._env_instance.render()
+
+    def close(self) -> None:
+        """Close the underlying env."""
+        self._env_instance.close()
+
+
+class GroupTracker:
+    """Live read-through view over :class:`Tracker` instances of a :class:`GroupEnv`.
+
+    Stores no episode data of its own — all reads delegate to each constituent
+    :class:`SingleEnv`'s tracker. Multiple :class:`GroupEnv` instances may point to
+    overlapping sets of :class:`SingleEnv` objects without any data conflicts.
+
+    Attributes
+    ----------
+    episode_cum_rewards:
+        Per-env list of raw cumulative rewards. ``episode_cum_rewards[i]`` is the
+        list from ``envs[i].tracker.episode_cum_rewards``.
+    episode_lengths:
+        Per-env list of episode step counts. ``episode_lengths[i]`` is the list
+        from ``envs[i].tracker.episode_lengths``.
+    """
+
+    def __init__(self, envs: list[SingleEnv]) -> None:
+        self._envs = envs
+
+    @property
+    def episode_cum_rewards(self) -> list[list[float]]:
+        """Per-env cumulative rewards, read live from each env's tracker."""
+        return [e.tracker.episode_cum_rewards for e in self._envs]
+
+    @property
+    def episode_lengths(self) -> list[list[float]]:
+        """Per-env episode lengths, read live from each env's tracker."""
+        return [e.tracker.episode_lengths for e in self._envs]
+
+    def clear(self) -> None:
+        """Clear the tracker on every constituent env."""
+        for e in self._envs:
+            e.tracker.clear()
+
+
+class GroupEnv:
+    """A pure reference container that delegates to a list of :class:`SingleEnv` instances.
+
+    Construct via :func:`mouse_gym.make_group_env` or directly: ``GroupEnv([env_a, env_b, env_c])``.
+
+    ``GroupEnv`` stores no episode data. Multiple ``GroupEnv`` instances — including
+    overlapping ones — can point to the same :class:`SingleEnv` objects without conflict::
+
+        big = GroupEnv([env_a, env_b, env_c])
+        sub = GroupEnv([env_a, env_b])   # shares env_a and env_b with big — fine
+
+    Each :class:`SingleEnv` owns its own :class:`Tracker`; ``GroupEnv.tracker``
+    is a live read-through view with no independent storage.
+
+    ``step`` and ``sample_random_input`` use a flat list indexed by position.
+    ``inputs[i]`` is the input dict for the i-th env. ``step`` returns a flat
+    ``list[dict]`` — one per env.
+    """
+
+    def __init__(self, envs: list[SingleEnv]) -> None:
+        if not envs:
+            raise ValueError("GroupEnv requires at least one SingleEnv.")
+        self._envs = list(envs)
+        self._tracker = GroupTracker(self._envs)
+
+    @property
+    def envs(self) -> list[SingleEnv]:
+        """The constituent :class:`SingleEnv` instances."""
+        return self._envs
+
+    @property
+    def tracker(self) -> GroupTracker:
+        """Live read-through view over each env's :class:`Tracker`; stores no data."""
+        return self._tracker
+
+    @property
+    def num_envs(self) -> int:
+        """Number of constituent env instances."""
+        return len(self._envs)
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        """Names of all constituent env instances."""
+        return tuple(e.name for e in self._envs)
+
+    @property
+    def output_specs(self) -> list[OutputSpec]:
+        """One :class:`OutputSpec` per env instance."""
+        return [e.output_spec for e in self._envs]
+
+    @property
+    def input_specs(self) -> list[InputSpec]:
+        """One :class:`InputSpec` per env instance."""
+        return [e.input_spec for e in self._envs]
+
+    @property
+    def action_space(self) -> gym.spaces.Tuple:
+        """Gymnasium tuple action space, one subspace per env instance."""
+        return gym.spaces.Tuple(tuple(e.action_space for e in self._envs))
+
+    @property
+    def observation_space(self) -> gym.spaces.Tuple:
+        """Gymnasium tuple observation space, one subspace per env instance."""
+        return gym.spaces.Tuple(tuple(e.observation_space for e in self._envs))
+
+    def sample_random_input(self) -> list[dict]:
+        """Sample random inputs for every env instance.
+
+        Returns a flat ``list[dict]`` — one dict per env. Pass directly to ``step()``.
+        """
+        return [e.sample_random_input() for e in self._envs]
+
+    def step(self, inputs: list[dict]) -> list[dict]:
+        """Step all env instances and return outputs.
+
+        ``inputs[i]`` is the input dict for env instance ``i``. Returns a flat
+        ``list[dict]`` — one output dict per env. On the first call and on any call
+        immediately after an episode ends, the corresponding input is ignored and a
+        reset frame is returned instead.
+        """
+        if not isinstance(inputs, list):
+            raise ValueError(
+                f"inputs must be a list with one dict per env instance; got {type(inputs).__name__}."
+            )
+        if len(inputs) != self.num_envs:
+            raise ValueError(
+                f"inputs must contain exactly {self.num_envs} entries, got {len(inputs)}."
+            )
+        return [e.step(inp) for e, inp in zip(self._envs, inputs)]
+
+    def render(self) -> list:
+        """Return rendered frames from all env instances, flattened into one list."""
+        frames: list = []
+        for e in self._envs:
+            frames.extend(e.render())
+        return frames
+
+    def close(self) -> None:
+        """Close all env instances."""
+        for e in self._envs:
+            e.close()
