@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import torch
 
-from mouse_gym import EnvConfig, FieldSpec, InputSpec, OutputSpec, Tracker, make_env, make_group_env
+from mouse_gym import EnvConfig, FieldSpec, InputSpec, Metrics, OutputSpec, make_env, make_group_env
 from mouse_gym.format import (
     DONE_EPISODE_TERMINATED,
     DONE_EPISODE_TRUNCATED,
@@ -63,7 +63,7 @@ def test_cartpole_step_contract() -> None:
             assert "id" not in r
             assert "name" not in r
             assert "action" not in r
-        for per_env in env.tracker.episode_cum_rewards:
+        for per_env in env.metrics.episode_cum_rewards:
             assert all(isinstance(v, float) for v in per_env)
     finally:
         env.close()
@@ -305,7 +305,7 @@ def test_autoreset_frame_uses_reset_reward() -> None:
         assert output["time"].item() == 0
         assert output["reward"].item() == 0.0
         assert output["done"].item() == 0
-        assert len(env.tracker.episode_cum_rewards) >= 1
+        assert len(env.metrics.episode_cum_rewards) >= 1
     finally:
         env.close()
 
@@ -325,7 +325,7 @@ def test_env_fn_factory() -> None:
         assert output["reward"].item() == -1.0
         assert output["done"].item() == 0
         assert output["task_index"] == 0
-        assert env.tracker.episode_cum_rewards == []
+        assert env.metrics.episode_cum_rewards == []
     finally:
         env.close()
 
@@ -461,7 +461,7 @@ def test_task_done_codes_fire_at_task_boundary() -> None:
         env.close()
 
 
-def test_tracker_accumulates_and_clears() -> None:
+def test_metrics_accumulates_and_clears() -> None:
     cfg = EnvConfig(
         id="CartPole-v1",
         reset_seed=0,
@@ -470,26 +470,26 @@ def test_tracker_accumulates_and_clears() -> None:
     )
     env = make_env(cfg)
     try:
-        assert isinstance(env.tracker, Tracker)
-        assert env.tracker.episode_cum_rewards == []
-        assert env.tracker.episode_lengths == []
+        assert isinstance(env.metrics, Metrics)
+        assert env.metrics.episode_cum_rewards == []
+        assert env.metrics.episode_lengths == []
 
         for _ in range(200):
             env.step(env.sample_random_input())
-            if env.tracker.episode_cum_rewards:
+            if env.metrics.episode_cum_rewards:
                 break
         else:
             raise AssertionError("no episode completed within 200 steps")
 
-        rewards = env.tracker.episode_cum_rewards
-        lengths = env.tracker.episode_lengths
+        rewards = env.metrics.episode_cum_rewards
+        lengths = env.metrics.episode_lengths
         assert len(rewards) >= 1
         assert len(lengths) == len(rewards)
         assert all(isinstance(r, float) for r in rewards)
         assert all(isinstance(l, float) for l in lengths)
 
-        env.tracker.clear()
-        assert env.tracker.episode_cum_rewards == []
-        assert env.tracker.episode_lengths == []
+        env.metrics.clear()
+        assert env.metrics.episode_cum_rewards == []
+        assert env.metrics.episode_lengths == []
     finally:
         env.close()

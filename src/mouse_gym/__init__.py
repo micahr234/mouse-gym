@@ -7,12 +7,12 @@ from mouse_gym.config import EnvConfig
 from mouse_gym.format import (
     FieldSpec,
     GroupEnv,
-    GroupTracker,
+    GroupMetrics,
     InputSpec,
     OutputSpec,
     SingleEnv,
     StepOutput,
-    Tracker,
+    Metrics,
 )
 
 __version__ = version("mouse-gym")
@@ -22,12 +22,12 @@ __all__ = [
     "EnvConfig",
     "FieldSpec",
     "GroupEnv",
-    "GroupTracker",
+    "GroupMetrics",
     "InputSpec",
     "make_env",
     "make_group_env",
+    "Metrics",
     "OutputSpec",
     "SingleEnv",
     "StepOutput",
-    "Tracker",
 ]

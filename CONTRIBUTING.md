@@ -31,7 +31,7 @@ If you edit notebooks with a different tool (browser Jupyter, `nbconvert`, scrip
 
 Tests live under [`tests/`](tests/):
 
-- `test_smoke.py` — core rollout protocol (CartPole, custom `env_fn`, info passthrough, tracker)
+- `test_smoke.py` — core rollout protocol (CartPole, custom `env_fn`, info passthrough, metrics)
 
 If you add a new feature, add or extend a test under [`tests/`](tests/) and/or a notebook under [`examples/`](examples/).
 

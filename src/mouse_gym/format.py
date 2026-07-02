@@ -116,7 +116,7 @@ class StepOutput(TypedDict, total=False):
     info: dict[str, Any]
 
 
-class Tracker:
+class Metrics:
     """Accumulates episode statistics for a single :class:`SingleEnv`.
 
     :class:`SingleEnv` feeds completed-episode results automatically. Call
@@ -368,7 +368,7 @@ class _EnvInstance:
         action = self._prepare_action(action_np)
         obs, raw_reward, terminated, truncated, info = self._env.step(action)
 
-        # Track raw cumulative reward (unscaled) for tracker
+        # Track raw cumulative reward (unscaled) for metrics
         raw_reward_f = float(raw_reward)
         self._episode_cum_reward += raw_reward_f
 
@@ -430,8 +430,8 @@ class SingleEnv:
     input ignored). After each episode ends, the next ``step`` call is also a reset
     frame (input ignored). Public ``reset()`` raises ``NotImplementedError``.
 
-    Episode statistics are accumulated automatically in :attr:`tracker`
-    (:class:`Tracker`). Call ``env.tracker.clear()`` to reset the accumulated
+    Episode statistics are accumulated automatically in :attr:`metrics`
+    (:class:`Metrics`). Call ``env.metrics.clear()`` to reset the accumulated
     data between evaluation runs.
 
     Every output dict contains:
@@ -447,15 +447,15 @@ class SingleEnv:
 
     def __init__(self, env_instance: _EnvInstance) -> None:
         self._env_instance = env_instance
-        self._tracker = Tracker()
+        self._metrics = Metrics()
 
     @property
-    def tracker(self) -> Tracker:
-        """Episode-statistics tracker; accumulates results from every completed episode.
+    def metrics(self) -> Metrics:
+        """Episode statistics; accumulates results from every completed episode.
 
-        Call ``env.tracker.clear()`` to wipe accumulated data between evaluation runs.
+        Call ``env.metrics.clear()`` to wipe accumulated data between evaluation runs.
         """
-        return self._tracker
+        return self._metrics
 
     @property
     def name(self) -> str:
@@ -499,13 +499,13 @@ class SingleEnv:
         On the first call and on any call immediately after an episode ends, the
         input is ignored and a reset frame is returned instead.
 
-        Completed-episode statistics are recorded automatically into :attr:`tracker`.
-        Call ``env.tracker.clear()`` to reset between runs.
+        Completed-episode statistics are recorded automatically into :attr:`metrics`.
+        Call ``env.metrics.clear()`` to reset between runs.
         """
         output, episode_result = self._env_instance.step(input)
         if episode_result is not None:
             cum_reward, length = episode_result
-            self._tracker._record(cum_reward, length)
+            self._metrics._record(cum_reward, length)
         return output
 
     def render(self) -> list:
@@ -517,21 +517,21 @@ class SingleEnv:
         self._env_instance.close()
 
 
-class GroupTracker:
-    """Live read-through view over :class:`Tracker` instances of a :class:`GroupEnv`.
+class GroupMetrics:
+    """Live read-through view over :class:`Metrics` instances of a :class:`GroupEnv`.
 
     Stores no episode data of its own — all reads delegate to each constituent
-    :class:`SingleEnv`'s tracker. Multiple :class:`GroupEnv` instances may point to
+    :class:`SingleEnv`'s metrics. Multiple :class:`GroupEnv` instances may point to
     overlapping sets of :class:`SingleEnv` objects without any data conflicts.
 
     Attributes
     ----------
     episode_cum_rewards:
         Per-env list of raw cumulative rewards. ``episode_cum_rewards[i]`` is the
-        list from ``envs[i].tracker.episode_cum_rewards``.
+        list from ``envs[i].metrics.episode_cum_rewards``.
     episode_lengths:
         Per-env list of episode step counts. ``episode_lengths[i]`` is the list
-        from ``envs[i].tracker.episode_lengths``.
+        from ``envs[i].metrics.episode_lengths``.
     """
 
     def __init__(self, envs: list[SingleEnv]) -> None:
@@ -539,18 +539,18 @@ class GroupTracker:
 
     @property
     def episode_cum_rewards(self) -> list[list[float]]:
-        """Per-env cumulative rewards, read live from each env's tracker."""
-        return [e.tracker.episode_cum_rewards for e in self._envs]
+        """Per-env cumulative rewards, read live from each env's metrics."""
+        return [e.metrics.episode_cum_rewards for e in self._envs]
 
     @property
     def episode_lengths(self) -> list[list[float]]:
-        """Per-env episode lengths, read live from each env's tracker."""
-        return [e.tracker.episode_lengths for e in self._envs]
+        """Per-env episode lengths, read live from each env's metrics."""
+        return [e.metrics.episode_lengths for e in self._envs]
 
     def clear(self) -> None:
-        """Clear the tracker on every constituent env."""
+        """Clear metrics on every constituent env."""
         for e in self._envs:
-            e.tracker.clear()
+            e.metrics.clear()
 
 
 class GroupEnv:
@@ -564,7 +564,7 @@ class GroupEnv:
         big = GroupEnv([env_a, env_b, env_c])
         sub = GroupEnv([env_a, env_b])   # shares env_a and env_b with big — fine
 
-    Each :class:`SingleEnv` owns its own :class:`Tracker`; ``GroupEnv.tracker``
+    Each :class:`SingleEnv` owns its own :class:`Metrics`; ``GroupEnv.metrics``
     is a live read-through view with no independent storage.
 
     ``step`` and ``sample_random_input`` use a flat list indexed by position.
@@ -576,7 +576,7 @@ class GroupEnv:
         if not envs:
             raise ValueError("GroupEnv requires at least one SingleEnv.")
         self._envs = list(envs)
-        self._tracker = GroupTracker(self._envs)
+        self._metrics = GroupMetrics(self._envs)
 
     @property
     def envs(self) -> list[SingleEnv]:
@@ -584,9 +584,9 @@ class GroupEnv:
         return self._envs
 
     @property
-    def tracker(self) -> GroupTracker:
-        """Live read-through view over each env's :class:`Tracker`; stores no data."""
-        return self._tracker
+    def metrics(self) -> GroupMetrics:
+        """Live read-through view over each env's :class:`Metrics`; stores no data."""
+        return self._metrics
 
     @property
     def num_envs(self) -> int:
