@@ -7,7 +7,6 @@ from typing import Any, Required, TypedDict, cast
 
 import gymnasium as gym
 import numpy as np
-import torch
 
 ACTION_KEY = "action"
 OBS_KEY = "observation"
@@ -21,47 +20,24 @@ DONE_TASK_TERMINATED     = 3
 DONE_TASK_TRUNCATED      = 4
 
 
-def _torch_dtype_for_np_dtype(dtype: Any) -> torch.dtype:
-    """Map a numpy dtype to the closest torch dtype available."""
-    dt = np.dtype(dtype)
-    dtype_map = {
-        np.dtype(np.bool_): torch.bool,
-        np.dtype(np.uint8): torch.uint8,
-        np.dtype(np.int8): torch.int8,
-        np.dtype(np.int16): torch.int16,
-        np.dtype(np.int32): torch.int32,
-        np.dtype(np.int64): torch.int64,
-        np.dtype(np.float16): torch.float16,
-        np.dtype(np.float32): torch.float32,
-        np.dtype(np.float64): torch.float64,
-    }
-    if dt in dtype_map:
-        return dtype_map[dt]
-    if np.issubdtype(dt, np.floating):
-        return torch.float32
-    if np.issubdtype(dt, np.integer) or np.issubdtype(dt, np.bool_):
-        return torch.int64
-    return torch.float32
-
-
-def _torch_dtype_for_space(space: gym.Space) -> torch.dtype:
-    """Map a Gymnasium space dtype to the torch dtype used to store its samples."""
+def _np_dtype_for_space(space: gym.Space) -> np.dtype:
+    """Map a Gymnasium space dtype to the numpy dtype used to store its samples."""
     raw = getattr(space, "dtype", None)
     if raw is None:
-        return torch.float32
-    return _torch_dtype_for_np_dtype(raw)
+        return np.dtype(np.float32)
+    return np.dtype(raw)
 
 
 @dataclass
 class FieldSpec:
     """Describes one field in an output or input dict.
 
-    ``dtype`` is the Python/torch type of the value (e.g. ``torch.float32``,
-    ``torch.int64``, ``int``, ``float``, ``np.float64``). ``shape`` is the tensor
-    shape as a tuple; ``()`` for scalars and plain Python primitives.
+    ``dtype`` is the numpy dtype or Python type of the value (e.g. ``np.float32``,
+    ``np.int64``, ``int``). ``shape`` is the array shape as a tuple; ``()`` for
+    scalars and plain Python primitives.
     """
 
-    dtype: torch.dtype | type
+    dtype: np.dtype | type
     shape: tuple[int, ...]
 
 
@@ -88,7 +64,7 @@ class OutputSpec:
 class InputSpec:
     """Mirrors the input dict: one attribute per key in ``inputs[i]``.
 
-    ``action`` describes the single ``"action"`` tensor. Its ``dtype`` and shape
+    ``action`` describes the single ``"action"`` array. Its ``dtype`` and shape
     mirror the underlying Gymnasium action space where possible.
     """
 
@@ -98,19 +74,20 @@ class InputSpec:
 class StepOutput(TypedDict, total=False):
     """All per-env fields for one step (single-env view, ``outputs[i]``).
 
-    Tensor fields are ``torch.Tensor``; other fields are plain Python types.
-    The ``observation`` field is a tensor for ordinary observation spaces, or a
-    ``dict[str, torch.Tensor]`` for ``gym.spaces.Dict`` observation spaces.
+    Array fields are ``np.ndarray`` scalars or vectors; ``episode_index`` and
+    ``task_index`` are plain ``int``. The ``observation`` field is an array for
+    ordinary observation spaces, or a ``dict[str, np.ndarray]`` for
+    ``gym.spaces.Dict`` observation spaces.
 
     The underlying Gymnasium ``info`` dict is forwarded verbatim under ``info``.
     For example, ``outputs[i]["info"]["q_star"]``, ``outputs[i]["info"]["map"]``,
     and ``outputs[i]["info"]["ns_params"]`` when the env emits those keys.
     """
 
-    time: Required[torch.Tensor]
-    observation: torch.Tensor | dict[str, torch.Tensor]
-    reward: Required[torch.Tensor]
-    done: Required[torch.Tensor]
+    time: Required[np.ndarray]
+    observation: np.ndarray | dict[str, np.ndarray]
+    reward: Required[np.ndarray]
+    done: Required[np.ndarray]
     episode_index: Required[int]
     task_index: Required[int]
     info: dict[str, Any]
@@ -214,7 +191,7 @@ class _EnvInstance:
         self,
     ) -> tuple[
         str | None,
-        dict[str, torch.dtype],
+        dict[str, np.dtype],
         OutputSpec,
         InputSpec,
     ]:
@@ -223,8 +200,8 @@ class _EnvInstance:
 
         # --- observation side ---
         if isinstance(obs_space, gym.spaces.Dict):
-            obs_dtypes: dict[str, torch.dtype] = {
-                key: _torch_dtype_for_space(sub)
+            obs_dtypes: dict[str, np.dtype] = {
+                key: _np_dtype_for_space(sub)
                 for key, sub in obs_space.spaces.items()
             }
             single_channel = None
@@ -236,14 +213,14 @@ class _EnvInstance:
                 for key, sub in obs_space.spaces.items()
             }
         else:
-            obs_torch_dtype = _torch_dtype_for_space(obs_space)
-            obs_dtypes = {OBS_KEY: obs_torch_dtype}
+            obs_np_dtype = _np_dtype_for_space(obs_space)
+            obs_dtypes = {OBS_KEY: obs_np_dtype}
             single_channel = OBS_KEY
             obs_shape = tuple(getattr(obs_space, "shape", ()) or ())
-            obs_field = FieldSpec(dtype=obs_torch_dtype, shape=obs_shape)
+            obs_field = FieldSpec(dtype=obs_np_dtype, shape=obs_shape)
 
         # --- action side ---
-        act_torch_dtype = _torch_dtype_for_space(act_space)
+        act_np_dtype = _np_dtype_for_space(act_space)
         if isinstance(act_space, gym.spaces.Discrete):
             act_shape: tuple[int, ...] = ()
         elif isinstance(act_space, gym.spaces.MultiDiscrete):
@@ -252,27 +229,27 @@ class _EnvInstance:
             act_shape = tuple(getattr(act_space, "shape", ()) or ())
 
         output_spec = OutputSpec(
-            time=FieldSpec(dtype=torch.int64, shape=()),
+            time=FieldSpec(dtype=np.dtype(np.int64), shape=()),
             observation=obs_field,
-            reward=FieldSpec(dtype=torch.float32, shape=()),
-            done=FieldSpec(dtype=torch.int64, shape=()),
+            reward=FieldSpec(dtype=np.dtype(np.float32), shape=()),
+            done=FieldSpec(dtype=np.dtype(np.int64), shape=()),
             episode_index=FieldSpec(dtype=int, shape=()),
             task_index=FieldSpec(dtype=int, shape=()),
         )
-        input_spec = InputSpec(action=FieldSpec(dtype=act_torch_dtype, shape=act_shape))
+        input_spec = InputSpec(action=FieldSpec(dtype=act_np_dtype, shape=act_shape))
         return single_channel, obs_dtypes, output_spec, input_spec
 
-    def _action_tensor(self, value: Any, *, dtype: torch.dtype) -> torch.Tensor:
-        arr = np.asarray(value).flatten()
+    def _action_array(self, value: Any, *, dtype: np.dtype) -> np.ndarray:
+        arr = np.asarray(value, dtype=dtype).flatten()
         if arr.size == 1:
-            return torch.tensor(arr.item(), dtype=dtype)
-        return torch.tensor(arr, dtype=dtype)
+            return np.array(arr.item(), dtype=dtype)
+        return np.asarray(value, dtype=dtype)
 
     def sample_random_input(self) -> dict:
         """Sample a random action as a ``dict`` with a flat ``"action"`` key."""
         raw = self._env.action_space.sample()
-        act_dtype = cast(torch.dtype, self._input_spec.action.dtype)
-        return {ACTION_KEY: self._action_tensor(raw, dtype=act_dtype)}
+        act_dtype = cast(np.dtype, self._input_spec.action.dtype)
+        return {ACTION_KEY: self._action_array(raw, dtype=act_dtype)}
 
     def _require_input(self, input_dict: Any) -> np.ndarray:
         """Extract and validate the ``"action"`` key from an input dict."""
@@ -287,8 +264,6 @@ class _EnvInstance:
                 f"got keys {sorted(input_dict.keys())}."
             )
         value = cast(Any, input_dict)[ACTION_KEY]
-        if hasattr(value, "numpy"):
-            return value.numpy()
         return np.asarray(value)
 
     def _prepare_action(self, action_np: np.ndarray) -> Any:
@@ -303,15 +278,15 @@ class _EnvInstance:
         arr = np.asarray(action_np, dtype=dtype) if dtype is not None else np.asarray(action_np)
         return arr.reshape(getattr(space, "shape", ()) or ())
 
-    def _reward_tensor(self, raw_reward: Any) -> torch.Tensor:
-        return torch.as_tensor(raw_reward)
+    def _reward_array(self, raw_reward: Any) -> np.ndarray:
+        return np.asarray(raw_reward, dtype=np.float32)
 
-    def _obs_entry(self, obs: Any) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
+    def _obs_entry(self, obs: Any) -> dict[str, np.ndarray | dict[str, np.ndarray]]:
         """Build observation field(s) from a single-env observation."""
         if isinstance(obs, dict):
-            return {OBS_KEY: {k: torch.as_tensor(np.asarray(v)) for k, v in obs.items()}}
+            return {OBS_KEY: {k: np.asarray(v) for k, v in obs.items()}}
         channel = cast(str, self._obs_channel)
-        return {channel: torch.as_tensor(np.asarray(obs))}
+        return {channel: np.asarray(obs)}
 
     def _reset_options_for_boundary(self, *, task_start: bool) -> dict[str, Any]:
         options = dict(self._episode_reset_options)
@@ -322,15 +297,17 @@ class _EnvInstance:
     def _do_reset(self, *, task_start: bool) -> tuple[dict, None]:
         """Call env.reset() and return the reset-frame output; no episode result."""
         reset_options = self._reset_options_for_boundary(task_start=task_start)
-        reset_kwargs = {"options": reset_options} if reset_options else {}
-        obs, info = self._env.reset(**reset_kwargs)
+        if reset_options:
+            obs, info = self._env.reset(options=reset_options)
+        else:
+            obs, info = self._env.reset()
         self._episode_time = 0
         self._episode_cum_reward = 0.0
 
         output: dict = {
-            TIME_KEY: torch.tensor(0, dtype=torch.int64),
-            "reward": torch.tensor(self._reset_reward, dtype=torch.float32),
-            "done": torch.tensor(DONE_RUNNING, dtype=torch.int64),
+            TIME_KEY: np.array(0, dtype=np.int64),
+            "reward": np.array(self._reset_reward, dtype=np.float32),
+            "done": np.array(DONE_RUNNING, dtype=np.int64),
             "episode_index": self._episode_index,
             "task_index": self._task_index,
         }
@@ -387,9 +364,9 @@ class _EnvInstance:
             done = DONE_RUNNING
 
         output: dict = {
-            TIME_KEY: torch.tensor(self._episode_time, dtype=torch.int64),
-            "reward": self._reward_tensor(raw_reward),
-            "done": torch.tensor(done, dtype=torch.int64),
+            TIME_KEY: np.array(self._episode_time, dtype=np.int64),
+            "reward": self._reward_array(raw_reward),
+            "done": np.array(done, dtype=np.int64),
             "episode_index": self._episode_index,
             "task_index": self._task_index,
         }
@@ -425,20 +402,21 @@ class SingleEnv:
 
     Construct via :func:`mouse_gym.make_env` with a single :class:`EnvConfig`.
 
-    ``step`` implements the reset-free mouse-gym protocol: the first call performs an
-    internal reset and returns the initial observation (``done=0``, ``time=0``,
-    input ignored). After each episode ends, the next ``step`` call is also a reset
-    frame (input ignored). Public ``reset()`` raises ``NotImplementedError``.
+    ``step`` implements the reset-free mouse-gym protocol: the first call returns a
+    reset frame (``done=0``, ``time=0``, input ignored). After each episode or
+    task ends, the next ``step`` is also a reset frame. There is no public
+    ``reset()`` — including at task boundaries — so training loops stay a single
+    ``step()`` stream.
 
     Episode statistics are accumulated automatically in :attr:`metrics`
-    (:class:`Metrics`). Call ``env.metrics.clear()`` to reset the accumulated
+    (:class:`Metrics`). Call ``env.metrics.clear()`` to wipe accumulated
     data between evaluation runs.
 
     Every output dict contains:
-        time (int64 tensor)       — step index within the episode (0-based)
-        observation (tensor/dict) — the observation emitted by the env
-        reward (tensor)           — raw env reward from the underlying Gymnasium step
-        done (int64 tensor)       — 0=running, 1=episode terminated, 2=episode truncated,
+        time (int64 array)        — step index within the episode (0-based)
+        observation (array/dict)  — the observation emitted by the env
+        reward (float32 array)    — raw env reward from the underlying Gymnasium step
+        done (int64 array)        — 0=running, 1=episode terminated, 2=episode truncated,
                                     3=task terminated, 4=task truncated
         episode_index (int)       — episode counter
         task_index (int)          — task counter
@@ -483,10 +461,11 @@ class SingleEnv:
         return self._env_instance._env.observation_space
 
     def reset(self, **_kwargs: Any) -> None:
-        """mouse-gym rollouts reset internally; use ``step()`` instead."""
+        """Not supported — episode and task transitions happen inside ``step()``."""
         raise NotImplementedError(
-            "SingleEnv does not support public reset(); call step() to use the "
-            "reset-free mouse-gym rollout protocol."
+            "SingleEnv does not support public reset(); call step() only. "
+            "Episode and task boundaries are handled internally and appear as "
+            "reset frames in the step() output — including when a task ends."
         )
 
     def sample_random_input(self) -> dict:

@@ -1,22 +1,23 @@
 [build-system]
-requires = ["setuptools>=80.9.0", "wheel"]
+requires = ["setuptools>=80.9.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "mouse-gym"
-version = "0.5.0"
+version = "0.1.0"
 description = "Meta-Optimization Using Sequential Experiences — reset-free Gymnasium rollouts"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "GPL-3.0-or-later"
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
     "gymnasium>=1.3.0",
+    "numpy>=1.26.0",
 ]
 
 [project.urls]
@@ -50,7 +51,6 @@ mouse_gym = ["py.typed"]
 
 [tool.uv]
 environments = ["sys_platform == 'linux'"]
-no-build-isolation-package = ["box2d-py"]
 
 [tool.setuptools]
 packages = [

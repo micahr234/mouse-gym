@@ -11,12 +11,19 @@ from mouse_gym.format import GroupEnv, SingleEnv, _EnvInstance
 from mouse_gym.wrappers import SeedStreamWrapper
 
 
-def _require_env_id(env_id: str) -> None:
-    if not env_id:
-        raise ValueError(
-            "id is required on EnvConfig but was not set. "
-            "Provide a non-empty id (e.g. 'CartPole-v1')."
-        )
+def _resolve_display_name(config: EnvConfig) -> str:
+    if config.name is not None:
+        return config.name
+    if config.id is not None:
+        return config.id
+    assert config.env_fn is not None
+    fn_name = getattr(config.env_fn, "__name__", "")
+    if fn_name and fn_name != "<lambda>":
+        return fn_name
+    raise ValueError(
+        "EnvConfig requires name when env_fn is an anonymous callable (e.g. lambda); "
+        "use a named function or class factory, or set name explicitly."
+    )
 
 
 def make_env(config: EnvConfig) -> SingleEnv:
@@ -61,8 +68,7 @@ def make_group_env(configs: list[EnvConfig]) -> GroupEnv:
 
 def _make_env_instance(config: EnvConfig) -> _EnvInstance:
     """Build one env instance from one :class:`EnvConfig`."""
-    _require_env_id(config.id)
-    name = config.id if config.name is None else config.name
+    name = _resolve_display_name(config)
     env_kwargs = {} if config.env_fn is not None else _prepare_plain_env_kwargs(config)
     env = _make_plain_single_env(config, env_kwargs=env_kwargs)
     return _EnvInstance(
@@ -87,13 +93,14 @@ def _make_plain_single_env(
     *,
     env_kwargs: dict[str, Any],
 ) -> gym.Env:
-    def env_fn() -> gym.Env:
+    def build_env() -> gym.Env:
         if config.env_fn is not None:
             return config.env_fn()
+        assert config.id is not None
         kw = dict(env_kwargs)
         return gym.make(config.id, **kw)
 
     return SeedStreamWrapper(
-        env_fn,
+        build_env,
         reset_seed=config.reset_seed,
     )

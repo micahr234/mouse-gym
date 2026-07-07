@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import gymnasium as gym
 import numpy as np
 import pytest
-import torch
 
 from mouse_gym import EnvConfig, FieldSpec, InputSpec, Metrics, OutputSpec, make_env, make_group_env
 from mouse_gym.format import (
@@ -103,20 +104,20 @@ def test_output_spec_and_input_spec_cartpole() -> None:
         assert isinstance(ispec, InputSpec)
 
         assert isinstance(ospec.observation, FieldSpec)
-        assert ospec.observation.dtype == torch.float32
+        assert ospec.observation.dtype == np.dtype(np.float32)
         assert ospec.observation.shape == (4,)
 
-        assert ospec.time.dtype == torch.int64
+        assert ospec.time.dtype == np.dtype(np.int64)
         assert ospec.time.shape == ()
-        assert ospec.reward.dtype == torch.float32
-        assert ospec.done.dtype == torch.int64
+        assert ospec.reward.dtype == np.dtype(np.float32)
+        assert ospec.done.dtype == np.dtype(np.int64)
         assert ospec.episode_index.dtype == int
         assert ospec.task_index.dtype == int
         assert not hasattr(ospec, "q_star")
         assert not hasattr(ospec, "ns_params")
 
         assert isinstance(ispec.action, FieldSpec)
-        assert ispec.action.dtype == torch.int64
+        assert ispec.action.dtype == np.dtype(np.int64)
         assert ispec.action.shape == ()
     finally:
         env.close()
@@ -134,11 +135,13 @@ def test_pendulum_continuous_step_contract() -> None:
         sampled = env.sample_random_input()
         action = sampled[0]
         assert "action" in action
-        assert action["action"].dtype == torch.float32
+        assert action["action"].dtype == np.float32
         assert action["action"].ndim == 0
 
-        assert env.input_specs[0].action.dtype == torch.float32
-        assert env.output_specs[0].observation.dtype == torch.float32
+        assert env.input_specs[0].action.dtype == np.dtype(np.float32)
+        obs_spec = env.output_specs[0].observation
+        assert isinstance(obs_spec, FieldSpec)
+        assert obs_spec.dtype == np.dtype(np.float32)
 
         outputs = _rollout(env)
         assert len(outputs) == 2
@@ -159,9 +162,9 @@ def test_action_input_contract_is_enforced() -> None:
     try:
         env.step(env.sample_random_input())
         with pytest.raises(ValueError, match="must be a dict"):
-            env.step([torch.tensor(0)])
+            env.step(cast(Any, [np.array(0)]))
         with pytest.raises(ValueError, match="action"):
-            env.step({"wrong": torch.tensor(0)})
+            env.step({"wrong": np.array(0)})
     finally:
         env.close()
 
@@ -174,7 +177,7 @@ def test_single_env_reset_is_not_implemented() -> None:
     )
     env = make_env(cfg)
     try:
-        with pytest.raises(NotImplementedError, match="reset-free mouse-gym rollout protocol"):
+        with pytest.raises(NotImplementedError, match="does not support public reset"):
             env.reset()
     finally:
         env.close()
@@ -205,10 +208,9 @@ def test_dict_obs_dtype_follows_space_not_key_name() -> None:
             )
 
     cfg = EnvConfig(
-        id="DictObs",
         reset_seed=0,
         episodes_per_task=5,
-        env_fn=lambda: DictObsEnv(),
+        env_fn=DictObsEnv,
     )
     env = make_env(cfg)
     try:
@@ -217,13 +219,13 @@ def test_dict_obs_dtype_follows_space_not_key_name() -> None:
         assert "tile" not in output
         obs = output["observation"]
         assert isinstance(obs, dict)
-        assert obs["pos"].dtype == torch.float32
-        assert obs["tile"].dtype == torch.int32
+        assert obs["pos"].dtype == np.float32
+        assert obs["tile"].dtype == np.int32
 
         ospec = env.output_spec
         assert isinstance(ospec.observation, dict)
-        assert ospec.observation["pos"].dtype == torch.float32
-        assert ospec.observation["tile"].dtype == torch.int32
+        assert ospec.observation["pos"].dtype == np.dtype(np.float32)
+        assert ospec.observation["tile"].dtype == np.dtype(np.int32)
     finally:
         env.close()
 
@@ -241,7 +243,6 @@ def test_info_keys_passthrough() -> None:
             return 1, 0.0, False, False, {"foo": 2, "q_star": np.array([0.0, 1.0], dtype=np.float64)}
 
     cfg = EnvConfig(
-        id="InfoEmittingEnv-v0",
         reset_seed=0,
         episodes_per_task=5,
         env_fn=InfoEmittingEnv,
@@ -285,7 +286,7 @@ def test_reset_seed_controls_internal_reset_stream() -> None:
         cfg = EnvConfig(id="CartPole-v1", reset_seed=reset_seed, episodes_per_task=5)
         env = make_env(cfg)
         try:
-            return env.step(env.sample_random_input())["observation"].numpy()
+            return env.step(env.sample_random_input())["observation"]
         finally:
             env.close()
 
@@ -310,7 +311,7 @@ def test_autoreset_frame_uses_reset_reward() -> None:
         env.close()
 
 
-def test_env_fn_factory() -> None:
+def test_initial_reset_frame_uses_reset_reward() -> None:
     cfg = EnvConfig(
         id="CartPole-v1",
         reset_seed=0,
@@ -349,7 +350,6 @@ def test_reset_frame_contract() -> None:
 
     cfgs = [
         EnvConfig(
-            id="CartPole-custom",
             name=f"CartPole-custom_{i}",
             reset_seed=i,
             episodes_per_task=5,
@@ -362,7 +362,7 @@ def test_reset_frame_contract() -> None:
         outputs = _rollout(env, steps=2)
         assert len(outputs) == 2
         assert env.names == ("CartPole-custom_0", "CartPole-custom_1")
-        obs = outputs[0]["observation"].numpy()
+        obs = outputs[0]["observation"]
         assert np.all(obs == 0.0)
     finally:
         env.close()
@@ -381,7 +381,6 @@ def test_box_observation_preserves_native_uint8_dtype() -> None:
             return np.full((2, 3), 9, dtype=np.uint8), 1.0, False, False, {}
 
     cfg = EnvConfig(
-        id="Uint8ImageEnv-v0",
         reset_seed=0,
         episodes_per_task=5,
         env_fn=Uint8ImageEnv,
@@ -390,9 +389,11 @@ def test_box_observation_preserves_native_uint8_dtype() -> None:
     try:
         output = _rollout_single(env, steps=2)
         assert "observation" in output
-        assert output["observation"].dtype == torch.uint8
-        assert env.output_spec.observation.dtype == torch.uint8
-        assert env.output_spec.observation.shape == (2, 3)
+        assert output["observation"].dtype == np.uint8
+        obs_spec = env.output_spec.observation
+        assert isinstance(obs_spec, FieldSpec)
+        assert obs_spec.dtype == np.dtype(np.uint8)
+        assert obs_spec.shape == (2, 3)
     finally:
         env.close()
 
@@ -414,7 +415,6 @@ def test_box_action_preserves_native_float64_dtype() -> None:
             return np.zeros(1, dtype=np.float32), 0.0, False, False, {}
 
     cfg = EnvConfig(
-        id="Float64ActionEnv-v0",
         reset_seed=0,
         episodes_per_task=5,
         env_fn=Float64ActionEnv,
@@ -422,13 +422,13 @@ def test_box_action_preserves_native_float64_dtype() -> None:
     env = make_env(cfg)
     try:
         input = env.sample_random_input()
-        assert input["action"].dtype == torch.float64
-        assert env.input_spec.action.dtype == torch.float64
+        assert input["action"].dtype == np.float64
+        assert env.input_spec.action.dtype == np.dtype(np.float64)
 
         env.step(input)
-        input = {"action": torch.tensor([0.25, -0.25], dtype=torch.float64)}
+        input = {"action": np.array([0.25, -0.25], dtype=np.float64)}
         env.step(input)
-        inner_env = env._env_instance._env.env
+        inner_env = cast(Float64ActionEnv, env._env_instance._env.unwrapped)
         assert inner_env.last_action is not None
         assert inner_env.last_action.dtype == np.float64
     finally:
@@ -459,6 +459,40 @@ def test_task_done_codes_fire_at_task_boundary() -> None:
         assert output["task_index"] >= 0
     finally:
         env.close()
+
+
+def test_env_config_rejects_id_and_env_fn() -> None:
+    with pytest.raises(ValueError, match="not both"):
+        EnvConfig(id="CartPole-v1", reset_seed=0, env_fn=lambda: gym.make("CartPole-v1"))
+
+
+def test_env_config_requires_id_or_env_fn() -> None:
+    with pytest.raises(ValueError, match="at least one"):
+        EnvConfig(reset_seed=0)
+
+
+def test_env_fn_default_name_from_callable() -> None:
+    class NamedEnv(gym.Env):
+        observation_space = gym.spaces.Discrete(1)
+        action_space = gym.spaces.Discrete(1)
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            return 0, {}
+
+        def step(self, action):
+            return 0, 0.0, True, False, {}
+
+    env = make_env(EnvConfig(reset_seed=0, env_fn=NamedEnv))
+    try:
+        assert env.name == "NamedEnv"
+    finally:
+        env.close()
+
+
+def test_anonymous_env_fn_requires_name() -> None:
+    with pytest.raises(ValueError, match="anonymous callable"):
+        make_env(EnvConfig(reset_seed=0, env_fn=lambda: gym.make("CartPole-v1")))
 
 
 def test_metrics_accumulates_and_clears() -> None:
