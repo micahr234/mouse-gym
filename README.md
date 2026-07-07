@@ -8,9 +8,9 @@ Imagine an agent deployed to real users. It attempts a task, gets feedback, and 
 
 Humans do not learn this way. In the real world, people improve after attempting tasks multiple times. They learn on-the-job, make mistakes, adapt, and become better as they work. If we want agents that do not feel like retraining a new hire every single day, we have to train them to improve as related experience accumulates.
 
-That shifts the focus from **zero-shot performance** — "How good is the agent immediately?" — to **few-shot improvement** — "How quickly does the agent get better as similar situations repeat?" Measuring that means watching performance across repeating episodes grouped into **tasks** — consecutive runs on the same env — not single isolated trials.
+That shifts the focus from **zero-shot performance** to **few-shot improvement**. The question is no longer how well an agent does the first time it sees a problem, but how quickly it gets better when a similar situation comes around again. To measure that, you have to watch performance across repeated episodes, not judge a single isolated trial.
 
-Gymnasium's usual loop treats every episode as independent (`reset()`, `step()`, `reset()`). **mouse-gym** wraps standard envs into a continuous stream: only `step()`, with episode and task boundaries visible in every output.
+Gymnasium's standard loop treats every episode as an isolated trial: reset the environment, rollout the episode out, repeat. **mouse-gym** groups consecutive episodes on the same environment into a **task** and runs the whole thing as one continuous stream. You only ever call `step()`, and episode and task boundaries show up as fields in the output.
 
 
 ## News
@@ -99,11 +99,9 @@ The notebooks in [`examples/`](examples/) are the detailed reference for `EnvCon
 
 **[04 — Metrics](examples/04_metrics.ipynb)** — Read episode returns and lengths from `env.metrics`, clear between eval runs, and aggregate stats across a `GroupEnv`.
 
-
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
-
 
 ## License
 
