@@ -83,7 +83,7 @@ On top of the standard env API, mouse-gym adds:
 
 - **Metrics on the env.** Episode returns and lengths accumulate in `env.metrics`, not in the `step()` return value. See [04 — Metrics](examples/04_metrics.ipynb).
 
-- **Grouped envs.** `GroupEnv` steps multiple `SingleEnv` instances sequentially in one `step()` call and returns a flat `list[dict]` — useful for mixed or multi-task setups without a vectorized wrapper. See [02 — Multiple envs](examples/02_multi_env.ipynb).
+- **Grouped envs.** `GroupEnv` steps multiple `SingleEnv` instances in one `step()` call and returns a flat `list[dict]` — useful for mixed or multi-task setups without a vectorized wrapper. By default (`max_threads=0`) stepping is sequential on the calling thread; set `max_threads > 0` to distribute envs across that many worker threads. See [02 — Multiple envs](examples/02_multi_env.ipynb).
 
 - **Input/output specs.** `input_spec` and `output_spec` describe the construction-time contract for step dict shapes and dtypes (on `GroupEnv`, `input_specs[i]` and `output_specs[i]`). See [01 — Random rollout](examples/01_random_rollout.ipynb).
 
@@ -93,7 +93,7 @@ The notebooks in [`examples/`](examples/) are the detailed reference for `EnvCon
 
 **[01 — Random rollout](examples/01_random_rollout.ipynb)** — Start here. Build an env from `EnvConfig`, run the reset-free `step()` loop, and inspect what comes back on each call: input dict (`action`), output dict (`observation`, `reward`, `done`, `time`, `episode_index`, `task_index`, `info`), reset frames, and `done` codes. Also covers `input_spec` / `output_spec` and optional `env_fn` factories.
 
-**[02 — Multiple envs](examples/02_multi_env.ipynb)** — Combine several env instances with `make_group_env`. Step heterogeneous envs (different ids, spaces, and seeds) in one sequential loop; read flat `list[dict]` inputs and outputs; use `env.names`, `input_specs[i]`, and `output_specs[i]`.
+**[02 — Multiple envs](examples/02_multi_env.ipynb)** — Combine several env instances with `make_group_env`. Step heterogeneous envs (different ids, spaces, and seeds) in one loop; optionally parallelize with `max_threads`; read flat `list[dict]` inputs and outputs; use `env.names`, `input_specs[i]`, and `output_specs[i]`.
 
 **[03 — RNG seeding control](examples/03_rng_seeding_control.ipynb)** — Reproduce or vary behavior with `reset_seed` (internal reset stream) and `env.action_space.seed()` (random action sampling), independently.
 

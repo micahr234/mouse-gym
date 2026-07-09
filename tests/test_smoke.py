@@ -527,3 +527,69 @@ def test_metrics_accumulates_and_clears() -> None:
         assert env.metrics.episode_lengths == []
     finally:
         env.close()
+
+
+def test_group_env_max_threads_default_is_main_thread() -> None:
+    env = make_group_env(
+        [EnvConfig(id="CartPole-v1", reset_seed=i, episodes_per_task=5) for i in range(3)]
+    )
+    try:
+        assert env.max_threads == 0
+        outputs = _rollout(env, steps=3)
+        assert len(outputs) == 3
+        assert all(int(o["time"]) >= 0 for o in outputs)
+    finally:
+        env.close()
+
+
+def test_group_env_max_threads_distributes_steps() -> None:
+    env = make_group_env(
+        [EnvConfig(id="CartPole-v1", reset_seed=i, name=f"cp-{i}", episodes_per_task=5) for i in range(4)],
+        max_threads=2,
+    )
+    try:
+        assert env.max_threads == 2
+        outputs = _rollout(env, steps=5)
+        assert len(outputs) == 4
+        assert env.names == ("cp-0", "cp-1", "cp-2", "cp-3")
+        for o in outputs:
+            assert "observation" in o
+            assert "done" in o
+    finally:
+        env.close()
+
+
+def test_group_env_max_threads_matches_sequential_contract() -> None:
+    """Threaded and sequential groups with the same seeds produce matching trajectories."""
+    cfgs = [
+        EnvConfig(id="CartPole-v1", reset_seed=i, episodes_per_task=5, kwargs={"max_episode_steps": 8})
+        for i in range(3)
+    ]
+    sequential = make_group_env(cfgs, max_threads=0)
+    threaded = make_group_env(cfgs, max_threads=3)
+    try:
+        for _ in range(20):
+            seq_in = sequential.sample_random_input()
+            # Reuse the same actions so trajectories stay comparable.
+            thr_in = [{"action": inp["action"].copy()} for inp in seq_in]
+            seq_out = sequential.step(seq_in)
+            thr_out = threaded.step(thr_in)
+            assert len(seq_out) == len(thr_out)
+            for s, t in zip(seq_out, thr_out):
+                assert int(s["done"]) == int(t["done"])
+                assert int(s["time"]) == int(t["time"])
+                assert int(s["episode_index"]) == int(t["episode_index"])
+                assert int(s["task_index"]) == int(t["task_index"])
+                np.testing.assert_array_equal(s["observation"], t["observation"])
+                np.testing.assert_array_equal(s["reward"], t["reward"])
+    finally:
+        sequential.close()
+        threaded.close()
+
+
+def test_group_env_rejects_negative_max_threads() -> None:
+    with pytest.raises(ValueError, match="max_threads"):
+        make_group_env(
+            [EnvConfig(id="CartPole-v1", reset_seed=0)],
+            max_threads=-1,
+        )

@@ -5,6 +5,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `GroupEnv` / `make_group_env` accept `max_threads` to step constituent envs on a thread pool (`0` = calling thread, default).
+
 ### Changed
 - Minimum Python version raised from 3.12 to 3.13.
 

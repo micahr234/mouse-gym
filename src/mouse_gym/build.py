@@ -40,7 +40,7 @@ def make_env(config: EnvConfig) -> SingleEnv:
     return SingleEnv(_make_env_instance(config))
 
 
-def make_group_env(configs: list[EnvConfig]) -> GroupEnv:
+def make_group_env(configs: list[EnvConfig], *, max_threads: int = 0) -> GroupEnv:
     """Create a :class:`GroupEnv` from a list of :class:`EnvConfig` objects.
 
     Each config creates one independent :class:`SingleEnv`. You can also construct
@@ -51,19 +51,28 @@ def make_group_env(configs: list[EnvConfig]) -> GroupEnv:
         big = GroupEnv([env_a, env_b])
         sub = GroupEnv([env_a])   # overlapping groups are fine
 
+    ``max_threads`` controls how ``GroupEnv.step`` runs constituent envs:
+
+    - ``0`` (default) — step every env on the calling thread.
+    - ``> 0`` — distribute envs across up to ``max_threads`` worker threads
+      (capped at the number of envs). Output order matches input order.
+
     Usage::
 
         env = make_group_env([
             EnvConfig(id="CartPole-v1", reset_seed=0, name="cp-0", episodes_per_task=5),
             EnvConfig(id="CartPole-v1", reset_seed=1, name="cp-1", episodes_per_task=5),
             EnvConfig(id="MountainCar-v0", reset_seed=2, name="mc-0", episodes_per_task=5),
-        ])
+        ], max_threads=3)
         for _ in range(1000):
             outputs = env.step(env.sample_random_input())
             cartpole_outs = outputs[:2]
             mountaincar_outs = outputs[2:3]
     """
-    return GroupEnv([SingleEnv(_make_env_instance(cfg)) for cfg in configs])
+    return GroupEnv(
+        [SingleEnv(_make_env_instance(cfg)) for cfg in configs],
+        max_threads=max_threads,
+    )
 
 
 def _make_env_instance(config: EnvConfig) -> _EnvInstance:

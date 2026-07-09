@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Required, TypedDict, cast
 
@@ -535,13 +536,18 @@ class GroupMetrics:
 class GroupEnv:
     """A pure reference container that delegates to a list of :class:`SingleEnv` instances.
 
-    Construct via :func:`mouse_gym.make_group_env` or directly: ``GroupEnv([env_a, env_b, env_c])``.
+    Construct via :func:`mouse_gym.make_group_env` or directly:
+    ``GroupEnv([env_a, env_b, env_c], max_threads=4)``.
 
     ``GroupEnv`` stores no episode data. Multiple ``GroupEnv`` instances — including
-    overlapping ones — can point to the same :class:`SingleEnv` objects without conflict::
+    overlapping ones — can point to the same :class:`SingleEnv` objects without conflict
+    when stepped sequentially::
 
         big = GroupEnv([env_a, env_b, env_c])
         sub = GroupEnv([env_a, env_b])   # shares env_a and env_b with big — fine
+
+    Do not step the same :class:`SingleEnv` concurrently (for example via overlapping
+    groups with ``max_threads > 0``).
 
     Each :class:`SingleEnv` owns its own :class:`Metrics`; ``GroupEnv.metrics``
     is a live read-through view with no independent storage.
@@ -549,13 +555,25 @@ class GroupEnv:
     ``step`` and ``sample_random_input`` use a flat list indexed by position.
     ``inputs[i]`` is the input dict for the i-th env. ``step`` returns a flat
     ``list[dict]`` — one per env.
+
+    With ``max_threads=0`` (default), ``step`` runs every env on the calling thread.
+    With ``max_threads > 0``, ``step`` distributes envs across up to ``max_threads``
+    worker threads (capped at ``num_envs``) and preserves output order.
     """
 
-    def __init__(self, envs: list[SingleEnv]) -> None:
+    def __init__(self, envs: list[SingleEnv], *, max_threads: int = 0) -> None:
         if not envs:
             raise ValueError("GroupEnv requires at least one SingleEnv.")
+        if max_threads < 0:
+            raise ValueError(f"max_threads must be >= 0; got {max_threads}.")
         self._envs = list(envs)
         self._metrics = GroupMetrics(self._envs)
+        self._max_threads = max_threads
+        self._executor: ThreadPoolExecutor | None = None
+        if max_threads > 0:
+            self._executor = ThreadPoolExecutor(
+                max_workers=min(max_threads, len(self._envs)),
+            )
 
     @property
     def envs(self) -> list[SingleEnv]:
@@ -571,6 +589,11 @@ class GroupEnv:
     def num_envs(self) -> int:
         """Number of constituent env instances."""
         return len(self._envs)
+
+    @property
+    def max_threads(self) -> int:
+        """Worker-thread cap for ``step``; ``0`` means run on the calling thread."""
+        return self._max_threads
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -611,6 +634,10 @@ class GroupEnv:
         ``list[dict]`` — one output dict per env. On the first call and on any call
         immediately after an episode ends, the corresponding input is ignored and a
         reset frame is returned instead.
+
+        With ``max_threads=0``, steps run sequentially on the calling thread. With
+        ``max_threads > 0``, steps are distributed across worker threads; results stay
+        index-aligned with ``inputs``.
         """
         if not isinstance(inputs, list):
             raise ValueError(
@@ -620,7 +647,9 @@ class GroupEnv:
             raise ValueError(
                 f"inputs must contain exactly {self.num_envs} entries, got {len(inputs)}."
             )
-        return [e.step(inp) for e, inp in zip(self._envs, inputs)]
+        if self._executor is None:
+            return [e.step(inp) for e, inp in zip(self._envs, inputs)]
+        return list(self._executor.map(_step_env, self._envs, inputs))
 
     def render(self) -> list:
         """Return rendered frames from all env instances, flattened into one list."""
@@ -630,6 +659,16 @@ class GroupEnv:
         return frames
 
     def close(self) -> None:
-        """Close all env instances."""
-        for e in self._envs:
-            e.close()
+        """Close all env instances and shut down any worker threads."""
+        try:
+            for e in self._envs:
+                e.close()
+        finally:
+            if self._executor is not None:
+                self._executor.shutdown(wait=True)
+                self._executor = None
+
+
+def _step_env(env: SingleEnv, inp: dict) -> dict:
+    """Step one env; module-level helper for :class:`ThreadPoolExecutor.map`."""
+    return env.step(inp)
