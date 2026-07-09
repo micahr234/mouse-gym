@@ -5,6 +5,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Minimum Python version raised from 3.12 to 3.13.
+
 ## [0.1.0] - 2026-07-07
 
 First beta release of mouse-gym as a standalone package, split out of the pre-split mouse repo (which ended at 0.5.0). Versioning restarts at 0.1.0. Changes below are relative to that pre-split repo.

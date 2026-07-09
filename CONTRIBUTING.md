@@ -12,7 +12,7 @@ Mouse Gym is actively developed and contributions are very welcome — whether t
 ## Development setup
 
 ```bash
-# Clone and create a virtual environment (Python 3.12, via uv)
+# Clone and create a virtual environment (Python 3.13, via uv)
 git clone https://github.com/micahr234/mouse-gym.git
 cd mouse-gym
 source scripts/install.sh
@@ -37,7 +37,7 @@ If you add a new feature, add or extend a test under [`tests/`](tests/) and/or a
 
 ## Code style
 
-- Python 3.12+, type-annotated throughout.
+- Python 3.13+, type-annotated throughout.
 - Follow the existing patterns: config in `config.py`, build in `build.py`, wrappers in `wrappers.py`, formatting in `format.py`, public API in `__init__.py`. Third-party envs and Gymnasium wrappers are built by users via `env_fn` rather than bundled integrations. Implementation details belong in code comments and docstrings.
 - Avoid silent fallbacks — if a precondition isn't met, raise a clear error.
 - Comments should explain *why*, not *what*.

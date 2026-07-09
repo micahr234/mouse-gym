@@ -25,7 +25,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
 ## Install
 
-**Requirements:** Python 3.12+, Gymnasium ≥ 1.3, NumPy ≥ 1.26 (NumPy is also pulled in by Gymnasium).
+**Requirements:** Python 3.13+, Gymnasium ≥ 1.3, NumPy ≥ 1.26 (NumPy is also pulled in by Gymnasium).
 
 ```bash
 pip install mouse-gym

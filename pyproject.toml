@@ -7,7 +7,7 @@ name = "mouse-gym"
 version = "0.1.0"
 description = "Meta-Optimization Using Sequential Experiences — reset-free Gymnasium rollouts"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 license = "GPL-3.0-or-later"
 classifiers = [
     "Development Status :: 4 - Beta",
