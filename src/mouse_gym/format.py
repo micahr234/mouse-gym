@@ -95,10 +95,11 @@ class StepOutput(TypedDict, total=False):
 
 
 class Metrics:
-    """Accumulates episode statistics for a single :class:`SingleEnv`.
+    """Accumulates episode and task statistics for a single :class:`SingleEnv`.
 
-    :class:`SingleEnv` feeds completed-episode results automatically. Call
-    :meth:`clear` to wipe all accumulated data (e.g. between evaluation runs).
+    :class:`SingleEnv` feeds completed-episode and completed-task results
+    automatically. Call :meth:`clear` to wipe all accumulated data (e.g.
+    between evaluation runs).
 
     Attributes
     ----------
@@ -108,20 +109,34 @@ class Metrics:
     episode_lengths:
         List of episode step counts for every completed episode since the last
         :meth:`clear` call.
+    task_cum_rewards:
+        List of raw cumulative rewards summed across every episode in each
+        completed task since the last :meth:`clear` call.
+    task_lengths:
+        List of total step counts summed across every episode in each completed
+        task since the last :meth:`clear` call.
     """
 
     def __init__(self) -> None:
         self._episode_cum_rewards: list[float] = []
         self._episode_lengths: list[float] = []
+        self._task_cum_rewards: list[float] = []
+        self._task_lengths: list[float] = []
 
     def _record(self, cum_reward: float, length: float) -> None:
         self._episode_cum_rewards.append(cum_reward)
         self._episode_lengths.append(length)
 
+    def _record_task(self, cum_reward: float, length: float) -> None:
+        self._task_cum_rewards.append(cum_reward)
+        self._task_lengths.append(length)
+
     def clear(self) -> None:
-        """Wipe all accumulated episode data."""
+        """Wipe all accumulated episode and task data."""
         self._episode_cum_rewards = []
         self._episode_lengths = []
+        self._task_cum_rewards = []
+        self._task_lengths = []
 
     @property
     def episode_cum_rewards(self) -> list[float]:
@@ -132,6 +147,16 @@ class Metrics:
     def episode_lengths(self) -> list[float]:
         """Episode lengths (step counts) for completed episodes."""
         return self._episode_lengths
+
+    @property
+    def task_cum_rewards(self) -> list[float]:
+        """Raw cumulative rewards summed across episodes in completed tasks."""
+        return self._task_cum_rewards
+
+    @property
+    def task_lengths(self) -> list[float]:
+        """Total step counts summed across episodes in completed tasks."""
+        return self._task_lengths
 
 
 class _EnvInstance:
@@ -170,6 +195,8 @@ class _EnvInstance:
         self._task_episode_count = 0  # episodes completed in current task
         self._task_index = 0
         self._episode_cum_reward = 0.0
+        self._task_cum_reward = 0.0
+        self._task_cum_length = 0.0
 
         # Spec
         self._obs_channel, self._obs_dtypes, self._output_spec, self._input_spec = (
@@ -295,8 +322,8 @@ class _EnvInstance:
             options.update(self._task_reset_options)
         return options
 
-    def _do_reset(self, *, task_start: bool) -> tuple[dict, None]:
-        """Call env.reset() and return the reset-frame output; no episode result."""
+    def _do_reset(self, *, task_start: bool) -> tuple[dict, None, None]:
+        """Call env.reset() and return the reset-frame output; no metric results."""
         reset_options = self._reset_options_for_boundary(task_start=task_start)
         if reset_options:
             obs, info = self._env.reset(options=reset_options)
@@ -316,13 +343,16 @@ class _EnvInstance:
 
         output["info"] = info
 
-        return output, None
+        return output, None, None
 
-    def step(self, input_dict: dict) -> tuple[dict, tuple[float, float] | None]:
-        """Step this env instance; return ``(output, episode_result)``.
+    def step(
+        self, input_dict: dict
+    ) -> tuple[dict, tuple[float, float] | None, tuple[float, float] | None]:
+        """Step this env instance; return ``(output, episode_result, task_result)``.
 
         ``episode_result`` is ``(cum_reward, length)`` when the episode ended on this
-        step, or ``None`` otherwise (including reset frames).
+        step, or ``None`` otherwise (including reset frames). ``task_result`` uses the
+        same shape when the task ended on this step (``done`` 3/4), or ``None``.
         """
         if self._needs_initial_reset:
             self._needs_initial_reset = False
@@ -376,14 +406,24 @@ class _EnvInstance:
         output["info"] = info
 
         episode_result: tuple[float, float] | None
+        task_result: tuple[float, float] | None
         if done != DONE_RUNNING:
             episode_result = (self._episode_cum_reward, float(self._episode_time))
+            self._task_cum_reward += self._episode_cum_reward
+            self._task_cum_length += float(self._episode_time)
+            if task_done:
+                task_result = (self._task_cum_reward, self._task_cum_length)
+                self._task_cum_reward = 0.0
+                self._task_cum_length = 0.0
+            else:
+                task_result = None
             self._autoreset_pending = True
             self._task_done_pending = task_done
         else:
             episode_result = None
+            task_result = None
 
-        return output, episode_result
+        return output, episode_result, task_result
 
     def render(self) -> list:
         """Return rendered frames from this env instance."""
@@ -482,10 +522,13 @@ class SingleEnv:
         Completed-episode statistics are recorded automatically into :attr:`metrics`.
         Call ``env.metrics.clear()`` to reset between runs.
         """
-        output, episode_result = self._env_instance.step(input)
+        output, episode_result, task_result = self._env_instance.step(input)
         if episode_result is not None:
             cum_reward, length = episode_result
             self._metrics._record(cum_reward, length)
+        if task_result is not None:
+            task_cum_reward, task_length = task_result
+            self._metrics._record_task(task_cum_reward, task_length)
         return output
 
     def render(self) -> list:
@@ -500,9 +543,10 @@ class SingleEnv:
 class GroupMetrics:
     """Live read-through view over :class:`Metrics` instances of a :class:`GroupEnv`.
 
-    Stores no episode data of its own — all reads delegate to each constituent
-    :class:`SingleEnv`'s metrics. Multiple :class:`GroupEnv` instances may point to
-    overlapping sets of :class:`SingleEnv` objects without any data conflicts.
+    Stores no episode or task data of its own — all reads delegate to each
+    constituent :class:`SingleEnv`'s metrics. Multiple :class:`GroupEnv` instances
+    may point to overlapping sets of :class:`SingleEnv` objects without any data
+    conflicts.
 
     Attributes
     ----------
@@ -512,6 +556,12 @@ class GroupMetrics:
     episode_lengths:
         Per-env list of episode step counts. ``episode_lengths[i]`` is the list
         from ``envs[i].metrics.episode_lengths``.
+    task_cum_rewards:
+        Per-env list of task reward sums. ``task_cum_rewards[i]`` is the list from
+        ``envs[i].metrics.task_cum_rewards``.
+    task_lengths:
+        Per-env list of task length sums. ``task_lengths[i]`` is the list from
+        ``envs[i].metrics.task_lengths``.
     """
 
     def __init__(self, envs: list[SingleEnv]) -> None:
@@ -526,6 +576,16 @@ class GroupMetrics:
     def episode_lengths(self) -> list[list[float]]:
         """Per-env episode lengths, read live from each env's metrics."""
         return [e.metrics.episode_lengths for e in self._envs]
+
+    @property
+    def task_cum_rewards(self) -> list[list[float]]:
+        """Per-env task reward sums, read live from each env's metrics."""
+        return [e.metrics.task_cum_rewards for e in self._envs]
+
+    @property
+    def task_lengths(self) -> list[list[float]]:
+        """Per-env task length sums, read live from each env's metrics."""
+        return [e.metrics.task_lengths for e in self._envs]
 
     def clear(self) -> None:
         """Clear metrics on every constituent env."""

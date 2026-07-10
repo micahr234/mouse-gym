@@ -507,6 +507,8 @@ def test_metrics_accumulates_and_clears() -> None:
         assert isinstance(env.metrics, Metrics)
         assert env.metrics.episode_cum_rewards == []
         assert env.metrics.episode_lengths == []
+        assert env.metrics.task_cum_rewards == []
+        assert env.metrics.task_lengths == []
 
         for _ in range(200):
             env.step(env.sample_random_input())
@@ -525,6 +527,46 @@ def test_metrics_accumulates_and_clears() -> None:
         env.metrics.clear()
         assert env.metrics.episode_cum_rewards == []
         assert env.metrics.episode_lengths == []
+        assert env.metrics.task_cum_rewards == []
+        assert env.metrics.task_lengths == []
+    finally:
+        env.close()
+
+
+def test_task_metrics_accumulates_and_clears() -> None:
+    episodes_per_task = 2
+    cfg = EnvConfig(
+        id="CartPole-v1",
+        reset_seed=0,
+        episodes_per_task=episodes_per_task,
+        kwargs={"max_episode_steps": 10},
+    )
+    env = make_env(cfg)
+    try:
+        assert env.metrics.task_cum_rewards == []
+        assert env.metrics.task_lengths == []
+
+        for _ in range(500):
+            env.step(env.sample_random_input())
+            if env.metrics.task_cum_rewards:
+                break
+        else:
+            raise AssertionError("no task completed within 500 steps")
+
+        task_rewards = env.metrics.task_cum_rewards
+        task_lengths = env.metrics.task_lengths
+        assert len(task_rewards) >= 1
+        assert len(task_lengths) == len(task_rewards)
+
+        episode_rewards = env.metrics.episode_cum_rewards
+        episode_lengths = env.metrics.episode_lengths
+        assert len(episode_rewards) >= episodes_per_task
+        assert task_rewards[0] == sum(episode_rewards[:episodes_per_task])
+        assert task_lengths[0] == sum(episode_lengths[:episodes_per_task])
+
+        env.metrics.clear()
+        assert env.metrics.task_cum_rewards == []
+        assert env.metrics.task_lengths == []
     finally:
         env.close()
 

@@ -81,7 +81,7 @@ env.close()
 
 On top of the standard env API, mouse-gym adds:
 
-- **Metrics on the env.** Episode returns and lengths accumulate in `env.metrics`, not in the `step()` return value. See [04 — Metrics](examples/04_metrics.ipynb).
+- **Metrics on the env.** Episode returns and lengths accumulate in `env.metrics`, not in the `step()` return value. When `episodes_per_task > 0`, completed tasks also record reward and length sums in `env.metrics.task_cum_rewards` and `env.metrics.task_lengths`. See [04 — Metrics](examples/04_metrics.ipynb).
 
 - **Grouped envs.** `GroupEnv` steps multiple `SingleEnv` instances in one `step()` call and returns a flat `list[dict]` — useful for mixed or multi-task setups without a vectorized wrapper. By default (`max_threads=0`) stepping is sequential on the calling thread; set `max_threads > 0` to distribute envs across that many worker threads. See [02 — Multiple envs](examples/02_multi_env.ipynb).
 
