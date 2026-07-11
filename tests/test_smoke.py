@@ -53,14 +53,15 @@ def test_cartpole_step_contract() -> None:
         assert "action" in sampled[0]
         assert sampled[0]["action"].ndim == 0
         for r in outputs:
-            assert set(r.keys()) >= {
+            assert list(r.keys()) == [
+                "task_index",
+                "episode_index",
                 "step_index",
-                "observation",
                 "reward",
                 "done",
-                "episode_index",
-                "task_index",
-            }
+                "observation",
+                "info",
+            ]
             assert "id" not in r
             assert "name" not in r
             assert "action" not in r
@@ -256,6 +257,17 @@ def test_info_keys_passthrough() -> None:
         assert step_frame["info"]["foo"] == 2
         assert np.asarray(reset_frame["info"]["q_star"]).tolist() == [1.0, 0.0]
         assert np.asarray(step_frame["info"]["q_star"]).tolist() == [0.0, 1.0]
+        expected_keys = [
+            "task_index",
+            "episode_index",
+            "step_index",
+            "reward",
+            "done",
+            "observation",
+            "info",
+        ]
+        assert list(reset_frame.keys()) == expected_keys
+        assert list(step_frame.keys()) == expected_keys
     finally:
         env.close()
 

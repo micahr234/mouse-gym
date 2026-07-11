@@ -53,12 +53,12 @@ class OutputSpec:
     under the ``info`` key. No env-specific filtering is applied.
     """
 
+    task_index: FieldSpec
+    episode_index: FieldSpec
     step_index: FieldSpec
-    observation: FieldSpec | dict[str, FieldSpec]
     reward: FieldSpec
     done: FieldSpec
-    episode_index: FieldSpec
-    task_index: FieldSpec
+    observation: FieldSpec | dict[str, FieldSpec]
 
 
 @dataclass
@@ -85,12 +85,12 @@ class StepOutput(TypedDict, total=False):
     and ``outputs[i]["info"]["ns_params"]`` when the env emits those keys.
     """
 
+    task_index: Required[int]
+    episode_index: Required[int]
     step_index: Required[np.ndarray]
-    observation: np.ndarray | dict[str, np.ndarray]
     reward: Required[np.ndarray]
     done: Required[np.ndarray]
-    episode_index: Required[int]
-    task_index: Required[int]
+    observation: np.ndarray | dict[str, np.ndarray]
     info: dict[str, Any]
 
 
@@ -257,12 +257,12 @@ class _EnvInstance:
             act_shape = tuple(getattr(act_space, "shape", ()) or ())
 
         output_spec = OutputSpec(
+            task_index=FieldSpec(dtype=int, shape=()),
+            episode_index=FieldSpec(dtype=int, shape=()),
             step_index=FieldSpec(dtype=np.dtype(np.int64), shape=()),
-            observation=obs_field,
             reward=FieldSpec(dtype=np.dtype(np.float32), shape=()),
             done=FieldSpec(dtype=np.dtype(np.int64), shape=()),
-            episode_index=FieldSpec(dtype=int, shape=()),
-            task_index=FieldSpec(dtype=int, shape=()),
+            observation=obs_field,
         )
         input_spec = InputSpec(action=FieldSpec(dtype=act_np_dtype, shape=act_shape))
         return single_channel, obs_dtypes, output_spec, input_spec
@@ -316,6 +316,31 @@ class _EnvInstance:
         channel = cast(str, self._obs_channel)
         return {channel: np.asarray(obs)}
 
+    def _make_output(
+        self,
+        *,
+        step_index: int,
+        reward: np.ndarray,
+        done: int,
+        obs: Any,
+        info: dict[str, Any],
+    ) -> dict:
+        """Build a step output dict with stable key order.
+
+        Order: indexes coarsest-to-finest (``task_index``, ``episode_index``,
+        ``step_index``), then ``reward``, ``done``, ``observation``, then ``info``.
+        """
+        output: dict = {
+            "task_index": self._task_index,
+            "episode_index": self._episode_index,
+            STEP_INDEX_KEY: np.array(step_index, dtype=np.int64),
+            "reward": reward,
+            "done": np.array(done, dtype=np.int64),
+        }
+        output.update(self._obs_entry(obs))
+        output["info"] = info
+        return output
+
     def _reset_options_for_boundary(self, *, task_start: bool) -> dict[str, Any]:
         options = dict(self._episode_reset_options)
         if task_start:
@@ -332,18 +357,17 @@ class _EnvInstance:
         self._step_index = 0
         self._episode_cum_reward = 0.0
 
-        output: dict = {
-            STEP_INDEX_KEY: np.array(0, dtype=np.int64),
-            "reward": np.array(self._reset_reward, dtype=np.float32),
-            "done": np.array(DONE_RUNNING, dtype=np.int64),
-            "episode_index": self._episode_index,
-            "task_index": self._task_index,
-        }
-        output.update(self._obs_entry(obs))
-
-        output["info"] = info
-
-        return output, None, None
+        return (
+            self._make_output(
+                step_index=0,
+                reward=np.array(self._reset_reward, dtype=np.float32),
+                done=DONE_RUNNING,
+                obs=obs,
+                info=info,
+            ),
+            None,
+            None,
+        )
 
     def step(
         self, input_dict: dict
@@ -395,16 +419,13 @@ class _EnvInstance:
         else:
             done = DONE_RUNNING
 
-        output: dict = {
-            STEP_INDEX_KEY: np.array(self._step_index, dtype=np.int64),
-            "reward": self._reward_array(raw_reward),
-            "done": np.array(done, dtype=np.int64),
-            "episode_index": self._episode_index,
-            "task_index": self._task_index,
-        }
-        output.update(self._obs_entry(obs))
-
-        output["info"] = info
+        output = self._make_output(
+            step_index=self._step_index,
+            reward=self._reward_array(raw_reward),
+            done=done,
+            obs=obs,
+            info=info,
+        )
 
         episode_result: tuple[float, float] | None
         task_result: tuple[float, float] | None
@@ -454,14 +475,14 @@ class SingleEnv:
     (:class:`Metrics`). Call ``env.metrics.clear()`` to wipe accumulated
     data between evaluation runs.
 
-    Every output dict contains:
+    Every output dict contains (in this key order):
+        task_index (int)          — task counter
+        episode_index (int)       — episode counter within the current task (resets at task end)
         step_index (int64 array)  — step index within the episode (0-based; resets on episode restart)
-        observation (array/dict)  — the observation emitted by the env
         reward (float32 array)    — raw env reward from the underlying Gymnasium step
         done (int64 array)        — 0=running, 1=episode terminated, 2=episode truncated,
                                     3=task terminated, 4=task truncated
-        episode_index (int)       — episode counter within the current task (resets at task end)
-        task_index (int)          — task counter
+        observation (array/dict)  — the observation emitted by the env
         info (dict)               — Gymnasium info dict from the underlying env step/reset
     """
 
