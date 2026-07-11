@@ -11,6 +11,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 - Minimum Python version raised from 3.12 to 3.13.
+- Step output field `time` renamed to `step_index` (0-based within the episode; resets on episode restart).
+- `episode_index` now counts episodes within the current task and resets to `0` when a new task starts.
 
 ## [0.1.0] - 2026-07-07
 

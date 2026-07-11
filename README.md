@@ -63,17 +63,17 @@ env.close()
 
 **mouse-gym** builds on [Gymnasium](https://gymnasium.farama.org/) — you wrap ordinary Gymnasium envs and keep their observations, rewards, and spaces. What's different is the rollout interface:
 
-- **Reset-free rollouts.** Only call `step()` — `SingleEnv.reset()` is not part of the API, including at task boundaries. When an episode or task ends, the next `step()` returns a **reset frame**: initial observation, `time=0`, `done=0`, `reset_reward`; the input is ignored. (Mouse-gym calls the underlying env's Gymnasium `reset()` internally on that step — you never call it yourself.) One continuous loop; boundaries are fields in the output, not a separate `reset()` before `step()`.
+- **Reset-free rollouts.** Only call `step()` — `SingleEnv.reset()` is not part of the API, including at task boundaries. When an episode or task ends, the next `step()` returns a **reset frame**: initial observation, `step_index=0`, `done=0`, `reset_reward`; the input is ignored. (Mouse-gym calls the underlying env's Gymnasium `reset()` internally on that step — you never call it yourself.) One continuous loop; boundaries are fields in the output, not a separate `reset()` before `step()`.
 
-- **Dict I/O instead of Gymnasium's action + tuple.** Pass `{"action": ...}` to `step()` (use `sample_random_input()` for random rollouts). Each `step()` returns one dict with named fields — `observation`, `reward`, `done`, `time`, `episode_index`, `task_index`, and `info` — rather than `(observation, reward, terminated, truncated, info)`.
+- **Dict I/O instead of Gymnasium's action + tuple.** Pass `{"action": ...}` to `step()` (use `sample_random_input()` for random rollouts). Each `step()` returns one dict with named fields — `observation`, `reward`, `done`, `step_index`, `episode_index`, `task_index`, and `info` — rather than `(observation, reward, terminated, truncated, info)`.
 
-- **Tasks group episodes.** A task is a consecutive run of episodes — length set by `episodes_per_task` in `EnvConfig` (default `0`: no task boundary). When a task ends, the next `step()` is a reset frame with `task_index` incremented. `done` codes `3`/`4` mark the last step of a task.
+- **Tasks group episodes.** A task is a consecutive run of episodes — length set by `episodes_per_task` in `EnvConfig` (default `0`: no task boundary). When a task ends, the next `step()` is a reset frame with `task_index` incremented and `episode_index` reset to `0`. `done` codes `3`/`4` mark the last step of a task.
 
 - **`done` replaces `terminated` / `truncated`.** One integer field per step instead of two booleans:
-  - `0` — **Running.** A normal mid-episode step, or a reset frame (`time=0`, `reward=reset_reward`).
+  - `0` — **Running.** A normal mid-episode step, or a reset frame (`step_index=0`, `reward=reset_reward`).
   - `1` — **Episode terminated.** Underlying env returned `terminated=True` and this is not the last episode in the task. Do not bootstrap; the next `step()` is a reset frame (next episode, same task).
   - `2` — **Episode truncated.** Underlying env returned `truncated=True` and this is not the last episode in the task. Same semantics as `1`.
-  - `3` — **Task terminated.** `terminated=True` on the last episode in the task (per `episodes_per_task`). Bootstrap here; the next `step()` is a reset frame that starts a new task (`task_index` increments).
+  - `3` — **Task terminated.** `terminated=True` on the last episode in the task (per `episodes_per_task`). Bootstrap here; the next `step()` is a reset frame that starts a new task (`task_index` increments, `episode_index` resets to `0`).
   - `4` — **Task truncated.** `truncated=True` on the last episode in the task. Same bootstrap semantics as `3`.
   - With `episodes_per_task=0` (default), codes `3` and `4` never fire. Gymnasium has no task grouping or equivalent codes.
 
@@ -91,7 +91,7 @@ On top of the standard env API, mouse-gym adds:
 
 The notebooks in [`examples/`](examples/) are the detailed reference for `EnvConfig`, input/output fields, and day-to-day usage. Install notebook dependencies with `pip install "mouse-gym[examples]"`, then work through them in order:
 
-**[01 — Random rollout](examples/01_random_rollout.ipynb)** — Start here. Build an env from `EnvConfig`, run the reset-free `step()` loop, and inspect what comes back on each call: input dict (`action`), output dict (`observation`, `reward`, `done`, `time`, `episode_index`, `task_index`, `info`), reset frames, and `done` codes. Also covers `input_spec` / `output_spec` and optional `env_fn` factories.
+**[01 — Random rollout](examples/01_random_rollout.ipynb)** — Start here. Build an env from `EnvConfig`, run the reset-free `step()` loop, and inspect what comes back on each call: input dict (`action`), output dict (`observation`, `reward`, `done`, `step_index`, `episode_index`, `task_index`, `info`), reset frames, and `done` codes. Also covers `input_spec` / `output_spec` and optional `env_fn` factories.
 
 **[02 — Multiple envs](examples/02_multi_env.ipynb)** — Combine several env instances with `make_group_env`. Step heterogeneous envs (different ids, spaces, and seeds) in one loop; optionally parallelize with `max_threads`; read flat `list[dict]` inputs and outputs; use `env.names`, `input_specs[i]`, and `output_specs[i]`.
 

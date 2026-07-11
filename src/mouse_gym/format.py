@@ -12,7 +12,7 @@ import numpy as np
 ACTION_KEY = "action"
 OBS_KEY = "observation"
 
-TIME_KEY = "time"
+STEP_INDEX_KEY = "step_index"
 
 DONE_RUNNING             = 0
 DONE_EPISODE_TERMINATED  = 1
@@ -53,7 +53,7 @@ class OutputSpec:
     under the ``info`` key. No env-specific filtering is applied.
     """
 
-    time: FieldSpec
+    step_index: FieldSpec
     observation: FieldSpec | dict[str, FieldSpec]
     reward: FieldSpec
     done: FieldSpec
@@ -85,7 +85,7 @@ class StepOutput(TypedDict, total=False):
     and ``outputs[i]["info"]["ns_params"]`` when the env emits those keys.
     """
 
-    time: Required[np.ndarray]
+    step_index: Required[np.ndarray]
     observation: np.ndarray | dict[str, np.ndarray]
     reward: Required[np.ndarray]
     done: Required[np.ndarray]
@@ -162,10 +162,10 @@ class Metrics:
 class _EnvInstance:
     """Internal: wraps a single ``gym.Env`` with the mouse-gym step protocol.
 
-    Each env instance manages its own episode state — episode time, index, and
-    cumulative rewards — and implements the two-frame boundary sequence: a
+    Each env instance manages its own episode state — step index, episode index,
+    and cumulative rewards — and implements the two-frame boundary sequence: a
     terminal step (``done=1/2``) followed by a reset frame (``done=0``,
-    ``time=0``) on the next ``step()`` call, with the user's action on the
+    ``step_index=0``) on the next ``step()`` call, with the user's action on the
     reset-frame call silently ignored.
     """
 
@@ -190,7 +190,7 @@ class _EnvInstance:
         self._needs_initial_reset = True
         self._autoreset_pending = False
         self._task_done_pending = False
-        self._episode_time = 0
+        self._step_index = 0
         self._episode_index = 0
         self._task_episode_count = 0  # episodes completed in current task
         self._task_index = 0
@@ -257,7 +257,7 @@ class _EnvInstance:
             act_shape = tuple(getattr(act_space, "shape", ()) or ())
 
         output_spec = OutputSpec(
-            time=FieldSpec(dtype=np.dtype(np.int64), shape=()),
+            step_index=FieldSpec(dtype=np.dtype(np.int64), shape=()),
             observation=obs_field,
             reward=FieldSpec(dtype=np.dtype(np.float32), shape=()),
             done=FieldSpec(dtype=np.dtype(np.int64), shape=()),
@@ -329,11 +329,11 @@ class _EnvInstance:
             obs, info = self._env.reset(options=reset_options)
         else:
             obs, info = self._env.reset()
-        self._episode_time = 0
+        self._step_index = 0
         self._episode_cum_reward = 0.0
 
         output: dict = {
-            TIME_KEY: np.array(0, dtype=np.int64),
+            STEP_INDEX_KEY: np.array(0, dtype=np.int64),
             "reward": np.array(self._reset_reward, dtype=np.float32),
             "done": np.array(DONE_RUNNING, dtype=np.int64),
             "episode_index": self._episode_index,
@@ -360,14 +360,15 @@ class _EnvInstance:
 
         if self._autoreset_pending:
             self._autoreset_pending = False
-            self._episode_index += 1
             task_start = False
             if self._task_done_pending:
                 self._task_done_pending = False
                 self._task_index += 1
                 self._task_episode_count = 0
+                self._episode_index = 0
                 task_start = True
             else:
+                self._episode_index += 1
                 self._task_episode_count += 1
             return self._do_reset(task_start=task_start)
 
@@ -380,7 +381,7 @@ class _EnvInstance:
         raw_reward_f = float(raw_reward)
         self._episode_cum_reward += raw_reward_f
 
-        self._episode_time += 1
+        self._step_index += 1
 
         # Determine done code — codes 3/4 fire when this episode is the last in the task.
         # episodes_per_task == 0 means unlimited: task boundary never fires automatically.
@@ -395,7 +396,7 @@ class _EnvInstance:
             done = DONE_RUNNING
 
         output: dict = {
-            TIME_KEY: np.array(self._episode_time, dtype=np.int64),
+            STEP_INDEX_KEY: np.array(self._step_index, dtype=np.int64),
             "reward": self._reward_array(raw_reward),
             "done": np.array(done, dtype=np.int64),
             "episode_index": self._episode_index,
@@ -408,9 +409,9 @@ class _EnvInstance:
         episode_result: tuple[float, float] | None
         task_result: tuple[float, float] | None
         if done != DONE_RUNNING:
-            episode_result = (self._episode_cum_reward, float(self._episode_time))
+            episode_result = (self._episode_cum_reward, float(self._step_index))
             self._task_cum_reward += self._episode_cum_reward
-            self._task_cum_length += float(self._episode_time)
+            self._task_cum_length += float(self._step_index)
             if task_done:
                 task_result = (self._task_cum_reward, self._task_cum_length)
                 self._task_cum_reward = 0.0
@@ -444,7 +445,7 @@ class SingleEnv:
     Construct via :func:`mouse_gym.make_env` with a single :class:`EnvConfig`.
 
     ``step`` implements the reset-free mouse-gym protocol: the first call returns a
-    reset frame (``done=0``, ``time=0``, input ignored). After each episode or
+    reset frame (``done=0``, ``step_index=0``, input ignored). After each episode or
     task ends, the next ``step`` is also a reset frame. There is no public
     ``reset()`` — including at task boundaries — so training loops stay a single
     ``step()`` stream.
@@ -454,12 +455,12 @@ class SingleEnv:
     data between evaluation runs.
 
     Every output dict contains:
-        time (int64 array)        — step index within the episode (0-based)
+        step_index (int64 array)  — step index within the episode (0-based; resets on episode restart)
         observation (array/dict)  — the observation emitted by the env
         reward (float32 array)    — raw env reward from the underlying Gymnasium step
         done (int64 array)        — 0=running, 1=episode terminated, 2=episode truncated,
                                     3=task terminated, 4=task truncated
-        episode_index (int)       — episode counter
+        episode_index (int)       — episode counter within the current task (resets at task end)
         task_index (int)          — task counter
         info (dict)               — Gymnasium info dict from the underlying env step/reset
     """

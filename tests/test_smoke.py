@@ -54,7 +54,7 @@ def test_cartpole_step_contract() -> None:
         assert sampled[0]["action"].ndim == 0
         for r in outputs:
             assert set(r.keys()) >= {
-                "time",
+                "step_index",
                 "observation",
                 "reward",
                 "done",
@@ -107,14 +107,15 @@ def test_output_spec_and_input_spec_cartpole() -> None:
         assert ospec.observation.dtype == np.dtype(np.float32)
         assert ospec.observation.shape == (4,)
 
-        assert ospec.time.dtype == np.dtype(np.int64)
-        assert ospec.time.shape == ()
+        assert ospec.step_index.dtype == np.dtype(np.int64)
+        assert ospec.step_index.shape == ()
         assert ospec.reward.dtype == np.dtype(np.float32)
         assert ospec.done.dtype == np.dtype(np.int64)
         assert ospec.episode_index.dtype == int
         assert ospec.task_index.dtype == int
         assert not hasattr(ospec, "q_star")
         assert not hasattr(ospec, "ns_params")
+        assert not hasattr(ospec, "time")
 
         assert isinstance(ispec.action, FieldSpec)
         assert ispec.action.dtype == np.dtype(np.int64)
@@ -303,7 +304,7 @@ def test_autoreset_frame_uses_reset_reward() -> None:
     env = make_env(cfg)
     try:
         output, _step = _roll_until_autoreset(env)
-        assert output["time"].item() == 0
+        assert output["step_index"].item() == 0
         assert output["reward"].item() == 0.0
         assert output["done"].item() == 0
         assert len(env.metrics.episode_cum_rewards) >= 1
@@ -321,7 +322,7 @@ def test_initial_reset_frame_uses_reset_reward() -> None:
     env = make_env(cfg)
     try:
         output = env.step(env.sample_random_input())
-        assert output["time"].item() == 0
+        assert output["step_index"].item() == 0
         assert "action" not in output
         assert output["reward"].item() == -1.0
         assert output["done"].item() == 0
@@ -334,9 +335,9 @@ def test_initial_reset_frame_uses_reset_reward() -> None:
 def _roll_until_autoreset(env, *, max_steps: int = 500) -> tuple[dict, int]:
     output = env.step(env.sample_random_input())
     for step in range(1, max_steps):
-        prev_time = output["time"].item()
+        prev_step_index = output["step_index"].item()
         output = env.step(env.sample_random_input())
-        if output["time"].item() == 0 and prev_time > 0:
+        if output["step_index"].item() == 0 and prev_step_index > 0:
             return output, step
     raise AssertionError(f"no autoreset frame within {max_steps} steps")
 
@@ -461,6 +462,66 @@ def test_task_done_codes_fire_at_task_boundary() -> None:
         env.close()
 
 
+def test_step_index_resets_on_episode_restart() -> None:
+    cfg = EnvConfig(
+        id="CartPole-v1",
+        reset_seed=0,
+        episodes_per_task=5,
+        kwargs={"max_episode_steps": 8},
+    )
+    env = make_env(cfg)
+    try:
+        output = env.step(env.sample_random_input())
+        assert output["step_index"].item() == 0
+        saw_nonzero = False
+        for _ in range(100):
+            prev = int(output["step_index"].item())
+            output = env.step(env.sample_random_input())
+            cur = int(output["step_index"].item())
+            if cur == 0 and prev > 0:
+                assert int(output["done"].item()) == 0
+                return
+            if cur > 0:
+                saw_nonzero = True
+                assert cur == prev + 1
+        raise AssertionError(
+            f"no episode restart within 100 steps (saw_nonzero={saw_nonzero})"
+        )
+    finally:
+        env.close()
+
+
+def test_episode_index_resets_at_task_boundary() -> None:
+    cfg = EnvConfig(
+        id="CartPole-v1",
+        reset_seed=0,
+        episodes_per_task=2,
+        kwargs={"max_episode_steps": 5},
+    )
+    env = make_env(cfg)
+    try:
+        max_episode_in_task = 0
+        saw_task_reset = False
+        prev_task = 0
+        for _ in range(200):
+            output = env.step(env.sample_random_input())
+            ep = int(output["episode_index"])
+            task = int(output["task_index"])
+            assert ep >= 0
+            assert ep < 2, f"episode_index={ep} should stay within task (episodes_per_task=2)"
+            max_episode_in_task = max(max_episode_in_task, ep)
+            if task > prev_task:
+                assert ep == 0
+                assert int(output["step_index"].item()) == 0
+                saw_task_reset = True
+                break
+            prev_task = task
+        assert max_episode_in_task == 1, "expected to reach episode_index=1 within a task"
+        assert saw_task_reset, "expected episode_index to reset to 0 after a task boundary"
+    finally:
+        env.close()
+
+
 def test_env_config_rejects_id_and_env_fn() -> None:
     with pytest.raises(ValueError, match="not both"):
         EnvConfig(id="CartPole-v1", reset_seed=0, env_fn=lambda: gym.make("CartPole-v1"))
@@ -579,7 +640,7 @@ def test_group_env_max_threads_default_is_main_thread() -> None:
         assert env.max_threads == 0
         outputs = _rollout(env, steps=3)
         assert len(outputs) == 3
-        assert all(int(o["time"]) >= 0 for o in outputs)
+        assert all(int(o["step_index"]) >= 0 for o in outputs)
     finally:
         env.close()
 
@@ -619,7 +680,7 @@ def test_group_env_max_threads_matches_sequential_contract() -> None:
             assert len(seq_out) == len(thr_out)
             for s, t in zip(seq_out, thr_out):
                 assert int(s["done"]) == int(t["done"])
-                assert int(s["time"]) == int(t["time"])
+                assert int(s["step_index"]) == int(t["step_index"])
                 assert int(s["episode_index"]) == int(t["episode_index"])
                 assert int(s["task_index"]) == int(t["task_index"])
                 np.testing.assert_array_equal(s["observation"], t["observation"])

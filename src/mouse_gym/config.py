@@ -32,7 +32,7 @@ class EnvConfig:
             reset frame starts a new task (after ``done`` 3/4).
         render: Enable render mode (``"human"``) for ``id`` configs when not already in
             ``kwargs``.
-        reset_reward: Reward value on reset frames (``time=0``, ``done=0`` outputs
+        reset_reward: Reward value on reset frames (``step_index=0``, ``done=0`` outputs
             from ``step()``; default ``0.0``).
     """
 
