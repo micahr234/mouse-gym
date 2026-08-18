@@ -13,7 +13,6 @@ ACTION_KEY = "action"
 OBS_KEY = "observation"
 
 STEP_INDEX_KEY = "step_index"
-TASK_SEED_KEY = "task_seed"
 
 DONE_RUNNING = 0
 DONE_TERMINATED = 1
@@ -170,13 +169,12 @@ class _EnvInstance:
     ``step()`` call, with the user's action on the reset-frame call silently
     ignored.
 
-    Seeding: two independent streams with different scopes. A fresh episode
-    seed is drawn from the ``episode_seed`` stream on every reset and passed
-    to ``env.reset(seed=...)`` — per-episode randomness such as the start
-    position. When ``task_seed`` is set, a task seed is drawn from its stream
-    once per task start, held constant within the task, and forwarded on every
-    reset as ``options["task_seed"]`` — per-task randomness such as a
-    procedurally generated map.
+    Seeding: one seed is drawn from the ``seed`` stream per task and passed to
+    ``env.reset(seed=...)`` at the task-start reset only. Episode resets within
+    a task do not reseed — the env's RNG continues, following Gymnasium's
+    seed-once-per-session convention. Each task is therefore a fresh, seeded
+    Gymnasium session: reproducible as a whole, with episode-level randomness
+    (e.g. start positions) still varying across episodes.
     """
 
     def __init__(
@@ -184,8 +182,7 @@ class _EnvInstance:
         env: gym.Env,
         name: str,
         *,
-        episode_seed: int,
-        task_seed: int | None = None,
+        seed: int,
         reset_reward: float = 0.0,
         episode_reset_options: dict | None = None,
         task_reset_options: dict | None = None,
@@ -198,13 +195,8 @@ class _EnvInstance:
         self._task_reset_options = dict(task_reset_options or {})
         self._episodes_per_task = int(episodes_per_task)
 
-        # Episode-seed stream advances on every reset; task-seed stream (when
-        # configured) advances only at task starts.
-        self._episode_seed_rng = np.random.default_rng(episode_seed)
-        self._task_seed_rng = (
-            np.random.default_rng(task_seed) if task_seed is not None else None
-        )
-        self._task_seed: int | None = None
+        # Seed stream: advances once per task, consumed at task-start resets.
+        self._seed_rng = np.random.default_rng(seed)
 
         # Episode state
         self._needs_initial_reset = True
@@ -373,20 +365,14 @@ class _EnvInstance:
     def _do_reset(self, *, task_start: bool) -> tuple[dict, None, None]:
         """Call env.reset() and return the reset-frame output; no metric results.
 
-        Every reset draws a fresh episode seed for ``env.reset(seed=...)``.
-        When a task-seed stream is configured, a new task seed is drawn only at
-        task starts and forwarded as ``options["task_seed"]`` on every reset in
-        the task, so the env can hold its problem instance fixed across the
-        task's episodes.
+        A seed is drawn and passed to ``env.reset(seed=...)`` only when a task
+        starts; episode resets within the task pass no seed, so the env's RNG
+        continues and the whole task is a deterministic function of its seed.
         """
-        if task_start and self._task_seed_rng is not None:
-            self._task_seed = int(self._task_seed_rng.integers(0, 2**31))
-        episode_seed = int(self._episode_seed_rng.integers(0, 2**31))
+        seed = int(self._seed_rng.integers(0, 2**31)) if task_start else None
         reset_options = self._reset_options_for_boundary(task_start=task_start)
-        if self._task_seed is not None:
-            reset_options[TASK_SEED_KEY] = self._task_seed
         obs, info = self._env.reset(
-            seed=episode_seed,
+            seed=seed,
             options=reset_options or None,
         )
         self._step_index = 0

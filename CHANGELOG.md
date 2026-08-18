@@ -5,11 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Added
-- `EnvConfig.task_seed` — optional per-task seed stream. A new seed is drawn at each task start, stays constant for every episode reset within that task, and is forwarded to the underlying env on every reset as `options["task_seed"]`, so procedurally generated envs can key the problem instance (e.g. the FrozenLake map) on it. The `task_seed` key is reserved: `episode_reset_options` / `task_reset_options` containing it are rejected.
-
 ### Changed
-- `EnvConfig.reset_seed` renamed to `episode_seed`. Mechanics are unchanged — a fresh seed is drawn on every episode reset and passed to the underlying `env.reset(seed=...)` — the name now reflects that it governs episode-level randomness (e.g. start position), while the problem instance is governed by `task_seed`.
+- `EnvConfig.reset_seed` renamed to `seed`, and the stream now advances once per task instead of once per episode: the drawn value is passed to the underlying `env.reset(seed=...)` at the task-start reset only, and episode resets within a task pass no seed (Gymnasium's seed-once-per-session convention, applied per task). A whole task is reproducible from its seed while episode-level randomness still varies; envs that regenerate their problem instance when `reset` receives an explicit seed present the same instance to every episode in the task. Previously a fresh seed was drawn and passed on every episode reset.
 - Step output dict key order is now `task_index`, `episode_index`, `step_index`, `reward`, `task_done`, `episode_done`, `observation`, `info`.
 - `EnvConfig` now raises on `kwargs` or `render` combined with `env_fn` (both apply to `id` configs only) and on negative `episodes_per_task`, instead of silently ignoring them.
 

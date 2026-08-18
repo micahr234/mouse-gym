@@ -32,7 +32,7 @@ def make_env(config: EnvConfig) -> SingleEnv:
 
     Usage::
 
-        env = make_env(EnvConfig(id="CartPole-v1", episode_seed=0, episodes_per_task=5))
+        env = make_env(EnvConfig(id="CartPole-v1", seed=0, episodes_per_task=5))
         for _ in range(1000):
             output = env.step(env.sample_random_input())
     """
@@ -45,8 +45,8 @@ def make_group_env(configs: list[EnvConfig], *, max_threads: int = 0) -> GroupEn
     Each config creates one independent :class:`SingleEnv`. You can also construct
     :class:`GroupEnv` directly from existing :class:`SingleEnv` instances::
 
-        env_a = make_env(EnvConfig(id="CartPole-v1", episode_seed=0))
-        env_b = make_env(EnvConfig(id="CartPole-v1", episode_seed=1))
+        env_a = make_env(EnvConfig(id="CartPole-v1", seed=0))
+        env_b = make_env(EnvConfig(id="CartPole-v1", seed=1))
         big = GroupEnv([env_a, env_b])
         sub = GroupEnv([env_a])   # overlapping groups are fine
 
@@ -59,9 +59,9 @@ def make_group_env(configs: list[EnvConfig], *, max_threads: int = 0) -> GroupEn
     Usage::
 
         env = make_group_env([
-            EnvConfig(id="CartPole-v1", episode_seed=0, name="cp-0", episodes_per_task=5),
-            EnvConfig(id="CartPole-v1", episode_seed=1, name="cp-1", episodes_per_task=5),
-            EnvConfig(id="MountainCar-v0", episode_seed=2, name="mc-0", episodes_per_task=5),
+            EnvConfig(id="CartPole-v1", seed=0, name="cp-0", episodes_per_task=5),
+            EnvConfig(id="CartPole-v1", seed=1, name="cp-1", episodes_per_task=5),
+            EnvConfig(id="MountainCar-v0", seed=2, name="mc-0", episodes_per_task=5),
         ], max_threads=3)
         for _ in range(1000):
             outputs = env.step(env.sample_random_input())
@@ -80,8 +80,7 @@ def _make_env_instance(config: EnvConfig) -> _EnvInstance:
     return _EnvInstance(
         env=_make_plain_single_env(config),
         name=name,
-        episode_seed=config.episode_seed,
-        task_seed=config.task_seed,
+        seed=config.seed,
         reset_reward=config.reset_reward,
         episode_reset_options=config.episode_reset_options,
         task_reset_options=config.task_reset_options,
