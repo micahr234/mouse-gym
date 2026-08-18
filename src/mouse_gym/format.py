@@ -1,4 +1,4 @@
-"""Public step API and rollout contract types for mouse-gym ↔ mouse-core."""
+"""Public step API and rollout types for mouse-gym."""
 
 from __future__ import annotations
 
@@ -55,8 +55,8 @@ class OutputSpec:
     episode_index: FieldSpec
     step_index: FieldSpec
     reward: FieldSpec
-    episode_done: FieldSpec
     task_done: FieldSpec
+    episode_done: FieldSpec
     observation: FieldSpec | dict[str, FieldSpec]
 
 
@@ -88,8 +88,8 @@ class StepOutput(TypedDict, total=False):
     episode_index: Required[int]
     step_index: Required[np.ndarray]
     reward: Required[np.ndarray]
-    episode_done: Required[np.ndarray]
     task_done: Required[np.ndarray]
+    episode_done: Required[np.ndarray]
     observation: np.ndarray | dict[str, np.ndarray]
     info: dict[str, Any]
 
@@ -262,8 +262,8 @@ class _EnvInstance:
             episode_index=FieldSpec(dtype=int, shape=()),
             step_index=FieldSpec(dtype=np.dtype(np.int64), shape=()),
             reward=FieldSpec(dtype=np.dtype(np.float32), shape=()),
-            episode_done=FieldSpec(dtype=np.dtype(np.int64), shape=()),
             task_done=FieldSpec(dtype=np.dtype(np.int64), shape=()),
+            episode_done=FieldSpec(dtype=np.dtype(np.int64), shape=()),
             observation=obs_field,
         )
         input_spec = InputSpec(action=FieldSpec(dtype=act_np_dtype, shape=act_shape))
@@ -331,7 +331,7 @@ class _EnvInstance:
         """Build a step output dict with stable key order.
 
         Order: indexes coarsest-to-finest (``task_index``, ``episode_index``,
-        ``step_index``), then ``reward``, ``episode_done``, ``task_done``,
+        ``step_index``), then ``reward``, ``task_done``, ``episode_done``,
         ``observation``, then ``info``.
         """
         output: dict = {
@@ -339,8 +339,8 @@ class _EnvInstance:
             "episode_index": self._episode_index,
             STEP_INDEX_KEY: np.array(step_index, dtype=np.int64),
             "reward": reward,
-            "episode_done": np.array(episode_done, dtype=np.int64),
             "task_done": np.array(task_done, dtype=np.int64),
+            "episode_done": np.array(episode_done, dtype=np.int64),
         }
         output.update(self._obs_entry(obs))
         output["info"] = info
@@ -495,9 +495,9 @@ class SingleEnv:
         episode_index (int)         — episode counter within the current task (resets at task end)
         step_index (int64 array)    — step index within the episode (0-based; resets on episode restart)
         reward (float32 array)      — raw env reward from the underlying Gymnasium step
-        episode_done (int64 array)  — 0=running, 1=terminated, 2=truncated (Gymnasium only)
         task_done (int64 array)     — 0=running, 1=task terminated (reserved, unused),
                                       2=task truncated (episodes_per_task reached)
+        episode_done (int64 array)  — 0=running, 1=terminated, 2=truncated (Gymnasium only)
         observation (array/dict)    — the observation emitted by the env
         info (dict)                 — Gymnasium info dict from the underlying env step/reset
     """

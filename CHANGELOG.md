@@ -5,6 +5,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Step output dict key order is now `task_index`, `episode_index`, `step_index`, `reward`, `task_done`, `episode_done`, `observation`, `info`.
+
 ## [1.0.0] - 2026-08-18
 
 First stable release. The public step contract (`episode_done` / `task_done`, task grouping, reset-free `step()` stream) is the API this version commits to.

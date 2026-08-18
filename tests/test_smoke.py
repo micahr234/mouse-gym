@@ -56,8 +56,8 @@ def test_cartpole_step_contract() -> None:
                 "episode_index",
                 "step_index",
                 "reward",
-                "episode_done",
                 "task_done",
+                "episode_done",
                 "observation",
                 "info",
             ]
@@ -265,8 +265,8 @@ def test_info_keys_passthrough() -> None:
             "episode_index",
             "step_index",
             "reward",
-            "episode_done",
             "task_done",
+            "episode_done",
             "observation",
             "info",
         ]
