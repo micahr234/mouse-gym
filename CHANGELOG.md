@@ -5,8 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `EnvConfig.task_seed` — optional per-task seed stream. A new seed is drawn at each task start, stays constant for every episode reset within that task, and is forwarded to the underlying env on every reset as `options["task_seed"]`, so procedurally generated envs can key the problem instance (e.g. the FrozenLake map) on it. The `task_seed` key is reserved: `episode_reset_options` / `task_reset_options` containing it are rejected.
+
 ### Changed
+- `EnvConfig.reset_seed` renamed to `episode_seed`. Mechanics are unchanged — a fresh seed is drawn on every episode reset and passed to the underlying `env.reset(seed=...)` — the name now reflects that it governs episode-level randomness (e.g. start position), while the problem instance is governed by `task_seed`.
 - Step output dict key order is now `task_index`, `episode_index`, `step_index`, `reward`, `task_done`, `episode_done`, `observation`, `info`.
+- `EnvConfig` now raises on `kwargs` or `render` combined with `env_fn` (both apply to `id` configs only) and on negative `episodes_per_task`, instead of silently ignoring them.
+
+### Fixed
+- `sample_random_input()` now returns action arrays matching `input_spec.action.shape`; size-1 Box actions (e.g. Pendulum's `(1,)`) were previously collapsed to 0-d scalars, contradicting the spec.
 
 ## [1.0.0] - 2026-08-18
 

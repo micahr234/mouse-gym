@@ -9,10 +9,10 @@ from mouse_gym.format import (
     GroupEnv,
     GroupMetrics,
     InputSpec,
+    Metrics,
     OutputSpec,
     SingleEnv,
     StepOutput,
-    Metrics,
 )
 
 __version__ = version("mouse-gym")

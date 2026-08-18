@@ -8,7 +8,6 @@ import gymnasium as gym
 
 from mouse_gym.config import EnvConfig
 from mouse_gym.format import GroupEnv, SingleEnv, _EnvInstance
-from mouse_gym.wrappers import SeedStreamWrapper
 
 
 def _resolve_display_name(config: EnvConfig) -> str:
@@ -33,7 +32,7 @@ def make_env(config: EnvConfig) -> SingleEnv:
 
     Usage::
 
-        env = make_env(EnvConfig(id="CartPole-v1", reset_seed=0, episodes_per_task=5))
+        env = make_env(EnvConfig(id="CartPole-v1", episode_seed=0, episodes_per_task=5))
         for _ in range(1000):
             output = env.step(env.sample_random_input())
     """
@@ -46,8 +45,8 @@ def make_group_env(configs: list[EnvConfig], *, max_threads: int = 0) -> GroupEn
     Each config creates one independent :class:`SingleEnv`. You can also construct
     :class:`GroupEnv` directly from existing :class:`SingleEnv` instances::
 
-        env_a = make_env(EnvConfig(id="CartPole-v1", reset_seed=0))
-        env_b = make_env(EnvConfig(id="CartPole-v1", reset_seed=1))
+        env_a = make_env(EnvConfig(id="CartPole-v1", episode_seed=0))
+        env_b = make_env(EnvConfig(id="CartPole-v1", episode_seed=1))
         big = GroupEnv([env_a, env_b])
         sub = GroupEnv([env_a])   # overlapping groups are fine
 
@@ -60,9 +59,9 @@ def make_group_env(configs: list[EnvConfig], *, max_threads: int = 0) -> GroupEn
     Usage::
 
         env = make_group_env([
-            EnvConfig(id="CartPole-v1", reset_seed=0, name="cp-0", episodes_per_task=5),
-            EnvConfig(id="CartPole-v1", reset_seed=1, name="cp-1", episodes_per_task=5),
-            EnvConfig(id="MountainCar-v0", reset_seed=2, name="mc-0", episodes_per_task=5),
+            EnvConfig(id="CartPole-v1", episode_seed=0, name="cp-0", episodes_per_task=5),
+            EnvConfig(id="CartPole-v1", episode_seed=1, name="cp-1", episodes_per_task=5),
+            EnvConfig(id="MountainCar-v0", episode_seed=2, name="mc-0", episodes_per_task=5),
         ], max_threads=3)
         for _ in range(1000):
             outputs = env.step(env.sample_random_input())
@@ -78,11 +77,11 @@ def make_group_env(configs: list[EnvConfig], *, max_threads: int = 0) -> GroupEn
 def _make_env_instance(config: EnvConfig) -> _EnvInstance:
     """Build one env instance from one :class:`EnvConfig`."""
     name = _resolve_display_name(config)
-    env_kwargs = {} if config.env_fn is not None else _prepare_plain_env_kwargs(config)
-    env = _make_plain_single_env(config, env_kwargs=env_kwargs)
     return _EnvInstance(
-        env=env,
+        env=_make_plain_single_env(config),
         name=name,
+        episode_seed=config.episode_seed,
+        task_seed=config.task_seed,
         reset_reward=config.reset_reward,
         episode_reset_options=config.episode_reset_options,
         task_reset_options=config.task_reset_options,
@@ -90,26 +89,11 @@ def _make_env_instance(config: EnvConfig) -> _EnvInstance:
     )
 
 
-def _prepare_plain_env_kwargs(config: EnvConfig) -> dict[str, Any]:
-    env_kwargs = dict(config.kwargs or {})
+def _make_plain_single_env(config: EnvConfig) -> gym.Env:
+    if config.env_fn is not None:
+        return config.env_fn()
+    assert config.id is not None
+    env_kwargs: dict[str, Any] = dict(config.kwargs or {})
     if config.render and "render_mode" not in env_kwargs:
         env_kwargs["render_mode"] = "human"
-    return env_kwargs
-
-
-def _make_plain_single_env(
-    config: EnvConfig,
-    *,
-    env_kwargs: dict[str, Any],
-) -> gym.Env:
-    def build_env() -> gym.Env:
-        if config.env_fn is not None:
-            return config.env_fn()
-        assert config.id is not None
-        kw = dict(env_kwargs)
-        return gym.make(config.id, **kw)
-
-    return SeedStreamWrapper(
-        build_env,
-        reset_seed=config.reset_seed,
-    )
+    return gym.make(config.id, **env_kwargs)

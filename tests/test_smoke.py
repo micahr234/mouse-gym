@@ -36,7 +36,7 @@ def test_cartpole_step_contract() -> None:
         EnvConfig(
             id="CartPole-v1",
             name=f"train-cartpole_{i}",
-            reset_seed=i,
+            episode_seed=i,
             episodes_per_task=5,
         )
         for i in range(3)
@@ -73,8 +73,8 @@ def test_cartpole_step_contract() -> None:
 def test_group_env_exposes_gym_tuple_spaces() -> None:
     env = make_group_env(
         [
-            EnvConfig(id="CartPole-v1", reset_seed=0, episodes_per_task=5),
-            EnvConfig(id="CartPole-v1", reset_seed=1, episodes_per_task=5),
+            EnvConfig(id="CartPole-v1", episode_seed=0, episodes_per_task=5),
+            EnvConfig(id="CartPole-v1", episode_seed=1, episodes_per_task=5),
         ]
     )
     try:
@@ -92,7 +92,7 @@ def test_group_env_exposes_gym_tuple_spaces() -> None:
 def test_output_spec_and_input_spec_cartpole() -> None:
     cfg = EnvConfig(
         id="CartPole-v1",
-        reset_seed=0,
+        episode_seed=0,
         episodes_per_task=5,
     )
     env = make_env(cfg)
@@ -131,8 +131,8 @@ def test_output_spec_and_input_spec_cartpole() -> None:
 def test_pendulum_continuous_step_contract() -> None:
     env = make_group_env(
         [
-            EnvConfig(id="Pendulum-v1", reset_seed=0, episodes_per_task=5),
-            EnvConfig(id="Pendulum-v1", reset_seed=1, episodes_per_task=5),
+            EnvConfig(id="Pendulum-v1", episode_seed=0, episodes_per_task=5),
+            EnvConfig(id="Pendulum-v1", episode_seed=1, episodes_per_task=5),
         ]
     )
     try:
@@ -141,7 +141,8 @@ def test_pendulum_continuous_step_contract() -> None:
         action = sampled[0]
         assert "action" in action
         assert action["action"].dtype == np.float32
-        assert action["action"].ndim == 0
+        # Sampled inputs match the input spec shape.
+        assert action["action"].shape == (1,)
 
         assert env.input_specs[0].action.dtype == np.dtype(np.float32)
         obs_spec = env.output_specs[0].observation
@@ -160,7 +161,7 @@ def test_pendulum_continuous_step_contract() -> None:
 def test_action_input_contract_is_enforced() -> None:
     cfg = EnvConfig(
         id="CartPole-v1",
-        reset_seed=0,
+        episode_seed=0,
         episodes_per_task=5,
     )
     env = make_env(cfg)
@@ -177,7 +178,7 @@ def test_action_input_contract_is_enforced() -> None:
 def test_single_env_reset_is_not_implemented() -> None:
     cfg = EnvConfig(
         id="CartPole-v1",
-        reset_seed=0,
+        episode_seed=0,
         episodes_per_task=5,
     )
     env = make_env(cfg)
@@ -213,7 +214,7 @@ def test_dict_obs_dtype_follows_space_not_key_name() -> None:
             )
 
     cfg = EnvConfig(
-        reset_seed=0,
+        episode_seed=0,
         episodes_per_task=5,
         env_fn=DictObsEnv,
     )
@@ -248,7 +249,7 @@ def test_info_keys_passthrough() -> None:
             return 1, 0.0, False, False, {"foo": 2, "q_star": np.array([0.0, 1.0], dtype=np.float64)}
 
     cfg = EnvConfig(
-        reset_seed=0,
+        episode_seed=0,
         episodes_per_task=5,
         env_fn=InfoEmittingEnv,
     )
@@ -277,10 +278,10 @@ def test_info_keys_passthrough() -> None:
 
 
 def test_action_space_can_be_seeded_for_random_inputs() -> None:
-    def _sampled_actions(*, reset_seed: int, action_space_seed: int) -> list[int]:
+    def _sampled_actions(*, episode_seed: int, action_space_seed: int) -> list[int]:
         cfg = EnvConfig(
             id="CartPole-v1",
-            reset_seed=reset_seed,
+            episode_seed=episode_seed,
             episodes_per_task=5,
         )
         env = make_env(cfg)
@@ -290,31 +291,143 @@ def test_action_space_can_be_seeded_for_random_inputs() -> None:
         finally:
             env.close()
 
-    assert _sampled_actions(reset_seed=10, action_space_seed=20) == _sampled_actions(
-        reset_seed=11, action_space_seed=20
+    assert _sampled_actions(episode_seed=10, action_space_seed=20) == _sampled_actions(
+        episode_seed=11, action_space_seed=20
     )
-    assert _sampled_actions(reset_seed=10, action_space_seed=20) != _sampled_actions(
-        reset_seed=10, action_space_seed=21
+    assert _sampled_actions(episode_seed=10, action_space_seed=20) != _sampled_actions(
+        episode_seed=10, action_space_seed=21
     )
 
 
-def test_reset_seed_controls_internal_reset_stream() -> None:
-    def _first_obs(*, reset_seed: int) -> np.ndarray:
-        cfg = EnvConfig(id="CartPole-v1", reset_seed=reset_seed, episodes_per_task=5)
+def test_episode_seed_controls_internal_reset_stream() -> None:
+    def _first_obs(*, episode_seed: int) -> np.ndarray:
+        cfg = EnvConfig(id="CartPole-v1", episode_seed=episode_seed, episodes_per_task=5)
         env = make_env(cfg)
         try:
             return env.step(env.sample_random_input())["observation"]
         finally:
             env.close()
 
-    assert np.array_equal(_first_obs(reset_seed=3), _first_obs(reset_seed=3))
-    assert not np.array_equal(_first_obs(reset_seed=3), _first_obs(reset_seed=30))
+    assert np.array_equal(_first_obs(episode_seed=3), _first_obs(episode_seed=3))
+    assert not np.array_equal(_first_obs(episode_seed=3), _first_obs(episode_seed=30))
+
+
+class _ProceduralEnv(gym.Env):
+    """Reads ``options["task_seed"]`` on reset like a procedurally generated env would.
+
+    Reports the received task seed (or None) in ``info`` and draws a random
+    start position from the episode-seeded ``np_random`` stream.
+    """
+
+    observation_space = gym.spaces.Box(0.0, 1.0, shape=(1,), dtype=np.float32)
+    action_space = gym.spaces.Discrete(2)
+
+    def __init__(self) -> None:
+        self.reset_options: list[dict | None] = []
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        self.reset_options.append(options)
+        task_seed = (options or {}).get("task_seed")
+        start = np.array([self.np_random.random()], dtype=np.float32)
+        return start, {"task_seed": task_seed}
+
+    def step(self, action):
+        return np.zeros(1, np.float32), 0.0, True, False, {}
+
+
+def _reset_frames(env, *, steps: int) -> list[dict]:
+    frames = []
+    for _ in range(steps):
+        output = env.step(env.sample_random_input())
+        if output["step_index"].item() == 0:
+            frames.append(output)
+    return frames
+
+
+def test_task_seed_constant_within_task_and_changes_across_tasks() -> None:
+    cfg = EnvConfig(
+        env_fn=_ProceduralEnv,
+        episode_seed=0,
+        task_seed=7,
+        episodes_per_task=3,
+    )
+    env = make_env(cfg)
+    try:
+        seeds_by_task: dict[int, list[int]] = {}
+        starts_by_task: dict[int, list[float]] = {}
+        for frame in _reset_frames(env, steps=40):
+            task = int(frame["task_index"])
+            seeds_by_task.setdefault(task, []).append(frame["info"]["task_seed"])
+            starts_by_task.setdefault(task, []).append(float(frame["observation"][0]))
+        assert len(seeds_by_task) >= 2
+
+        # Task seed is constant within a task and differs across tasks.
+        for seeds in seeds_by_task.values():
+            assert all(isinstance(s, int) for s in seeds)
+            assert len(set(seeds)) == 1
+        per_task_seeds = [seeds[0] for seeds in seeds_by_task.values()]
+        assert len(set(per_task_seeds)) == len(per_task_seeds)
+
+        # Episode-level randomness still varies within a task.
+        assert len(set(starts_by_task[0])) > 1
+    finally:
+        env.close()
+
+
+def test_task_seed_stream_is_deterministic() -> None:
+    def _first_task_seed(*, task_seed: int) -> int:
+        cfg = EnvConfig(
+            env_fn=_ProceduralEnv,
+            episode_seed=0,
+            task_seed=task_seed,
+            episodes_per_task=3,
+        )
+        env = make_env(cfg)
+        try:
+            return env.step(env.sample_random_input())["info"]["task_seed"]
+        finally:
+            env.close()
+
+    assert _first_task_seed(task_seed=1) == _first_task_seed(task_seed=1)
+    assert _first_task_seed(task_seed=1) != _first_task_seed(task_seed=2)
+
+
+def test_no_task_seed_leaves_reset_options_untouched() -> None:
+    cfg = EnvConfig(
+        env_fn=_ProceduralEnv,
+        episode_seed=0,
+        episodes_per_task=2,
+    )
+    env = make_env(cfg)
+    try:
+        frames = _reset_frames(env, steps=10)
+        assert all(frame["info"]["task_seed"] is None for frame in frames)
+        inner = cast(_ProceduralEnv, env._env_instance._env.unwrapped)
+        assert all(options is None for options in inner.reset_options)
+    finally:
+        env.close()
+
+
+def test_env_config_reserves_task_seed_options_key() -> None:
+    with pytest.raises(ValueError, match="task_seed"):
+        EnvConfig(
+            id="CartPole-v1",
+            episode_seed=0,
+            episode_reset_options={"task_seed": 3},
+        )
+    with pytest.raises(ValueError, match="task_seed"):
+        EnvConfig(
+            id="CartPole-v1",
+            episode_seed=0,
+            task_reset_options={"task_seed": 3},
+        )
 
 
 def test_autoreset_frame_uses_reset_reward() -> None:
     cfg = EnvConfig(
         id="CartPole-v1",
-        reset_seed=0,
+        episode_seed=0,
         episodes_per_task=5,
     )
     env = make_env(cfg)
@@ -332,7 +445,7 @@ def test_autoreset_frame_uses_reset_reward() -> None:
 def test_initial_reset_frame_uses_reset_reward() -> None:
     cfg = EnvConfig(
         id="CartPole-v1",
-        reset_seed=0,
+        episode_seed=0,
         episodes_per_task=5,
         reset_reward=-1.0,
     )
@@ -370,7 +483,7 @@ def test_reset_frame_contract() -> None:
     cfgs = [
         EnvConfig(
             name=f"CartPole-custom_{i}",
-            reset_seed=i,
+            episode_seed=i,
             episodes_per_task=5,
             env_fn=make_cartpole,
         )
@@ -400,7 +513,7 @@ def test_box_observation_preserves_native_uint8_dtype() -> None:
             return np.full((2, 3), 9, dtype=np.uint8), 1.0, False, False, {}
 
     cfg = EnvConfig(
-        reset_seed=0,
+        episode_seed=0,
         episodes_per_task=5,
         env_fn=Uint8ImageEnv,
     )
@@ -434,7 +547,7 @@ def test_box_action_preserves_native_float64_dtype() -> None:
             return np.zeros(1, dtype=np.float32), 0.0, False, False, {}
 
     cfg = EnvConfig(
-        reset_seed=0,
+        episode_seed=0,
         episodes_per_task=5,
         env_fn=Float64ActionEnv,
     )
@@ -479,7 +592,7 @@ def test_task_done_codes_fire_at_task_boundary() -> None:
 
     def _collect_boundaries(env_fn: type[gym.Env]) -> tuple[list[int], list[int]]:
         cfg = EnvConfig(
-            reset_seed=0,
+            episode_seed=0,
             episodes_per_task=2,
             env_fn=env_fn,
         )
@@ -531,7 +644,7 @@ def test_task_done_codes_fire_at_task_boundary() -> None:
 def test_step_index_resets_on_episode_restart() -> None:
     cfg = EnvConfig(
         id="CartPole-v1",
-        reset_seed=0,
+        episode_seed=0,
         episodes_per_task=5,
         kwargs={"max_episode_steps": 8},
     )
@@ -561,7 +674,7 @@ def test_step_index_resets_on_episode_restart() -> None:
 def test_episode_index_resets_at_task_boundary() -> None:
     cfg = EnvConfig(
         id="CartPole-v1",
-        reset_seed=0,
+        episode_seed=0,
         episodes_per_task=2,
         kwargs={"max_episode_steps": 5},
     )
@@ -591,12 +704,33 @@ def test_episode_index_resets_at_task_boundary() -> None:
 
 def test_env_config_rejects_id_and_env_fn() -> None:
     with pytest.raises(ValueError, match="not both"):
-        EnvConfig(id="CartPole-v1", reset_seed=0, env_fn=lambda: gym.make("CartPole-v1"))
+        EnvConfig(id="CartPole-v1", episode_seed=0, env_fn=lambda: gym.make("CartPole-v1"))
 
 
 def test_env_config_requires_id_or_env_fn() -> None:
     with pytest.raises(ValueError, match="at least one"):
-        EnvConfig(reset_seed=0)
+        EnvConfig(episode_seed=0)
+
+
+def test_env_config_rejects_kwargs_with_env_fn() -> None:
+    def make_cartpole() -> gym.Env:
+        return gym.make("CartPole-v1")
+
+    with pytest.raises(ValueError, match="kwargs only apply to id configs"):
+        EnvConfig(episode_seed=0, env_fn=make_cartpole, kwargs={"max_episode_steps": 5})
+
+
+def test_env_config_rejects_render_with_env_fn() -> None:
+    def make_cartpole() -> gym.Env:
+        return gym.make("CartPole-v1")
+
+    with pytest.raises(ValueError, match="render only applies to id configs"):
+        EnvConfig(episode_seed=0, env_fn=make_cartpole, render=True)
+
+
+def test_env_config_rejects_negative_episodes_per_task() -> None:
+    with pytest.raises(ValueError, match="episodes_per_task"):
+        EnvConfig(id="CartPole-v1", episode_seed=0, episodes_per_task=-1)
 
 
 def test_env_fn_default_name_from_callable() -> None:
@@ -611,7 +745,7 @@ def test_env_fn_default_name_from_callable() -> None:
         def step(self, action):
             return 0, 0.0, True, False, {}
 
-    env = make_env(EnvConfig(reset_seed=0, env_fn=NamedEnv))
+    env = make_env(EnvConfig(episode_seed=0, env_fn=NamedEnv))
     try:
         assert env.name == "NamedEnv"
     finally:
@@ -620,13 +754,13 @@ def test_env_fn_default_name_from_callable() -> None:
 
 def test_anonymous_env_fn_requires_name() -> None:
     with pytest.raises(ValueError, match="anonymous callable"):
-        make_env(EnvConfig(reset_seed=0, env_fn=lambda: gym.make("CartPole-v1")))
+        make_env(EnvConfig(episode_seed=0, env_fn=lambda: gym.make("CartPole-v1")))
 
 
 def test_metrics_accumulates_and_clears() -> None:
     cfg = EnvConfig(
         id="CartPole-v1",
-        reset_seed=0,
+        episode_seed=0,
         episodes_per_task=5,
         kwargs={"max_episode_steps": 10},
     )
@@ -665,7 +799,7 @@ def test_task_metrics_accumulates_and_clears() -> None:
     episodes_per_task = 2
     cfg = EnvConfig(
         id="CartPole-v1",
-        reset_seed=0,
+        episode_seed=0,
         episodes_per_task=episodes_per_task,
         kwargs={"max_episode_steps": 10},
     )
@@ -701,7 +835,7 @@ def test_task_metrics_accumulates_and_clears() -> None:
 
 def test_group_env_max_threads_default_is_main_thread() -> None:
     env = make_group_env(
-        [EnvConfig(id="CartPole-v1", reset_seed=i, episodes_per_task=5) for i in range(3)]
+        [EnvConfig(id="CartPole-v1", episode_seed=i, episodes_per_task=5) for i in range(3)]
     )
     try:
         assert env.max_threads == 0
@@ -714,7 +848,7 @@ def test_group_env_max_threads_default_is_main_thread() -> None:
 
 def test_group_env_max_threads_distributes_steps() -> None:
     env = make_group_env(
-        [EnvConfig(id="CartPole-v1", reset_seed=i, name=f"cp-{i}", episodes_per_task=5) for i in range(4)],
+        [EnvConfig(id="CartPole-v1", episode_seed=i, name=f"cp-{i}", episodes_per_task=5) for i in range(4)],
         max_threads=2,
     )
     try:
@@ -734,7 +868,7 @@ def test_group_env_max_threads_distributes_steps() -> None:
 def test_group_env_max_threads_matches_sequential_contract() -> None:
     """Threaded and sequential groups with the same seeds produce matching trajectories."""
     cfgs = [
-        EnvConfig(id="CartPole-v1", reset_seed=i, episodes_per_task=5, kwargs={"max_episode_steps": 8})
+        EnvConfig(id="CartPole-v1", episode_seed=i, episodes_per_task=5, kwargs={"max_episode_steps": 8})
         for i in range(3)
     ]
     sequential = make_group_env(cfgs, max_threads=0)
@@ -763,6 +897,6 @@ def test_group_env_max_threads_matches_sequential_contract() -> None:
 def test_group_env_rejects_negative_max_threads() -> None:
     with pytest.raises(ValueError, match="max_threads"):
         make_group_env(
-            [EnvConfig(id="CartPole-v1", reset_seed=0)],
+            [EnvConfig(id="CartPole-v1", episode_seed=0)],
             max_threads=-1,
         )

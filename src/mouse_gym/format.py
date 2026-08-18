@@ -13,10 +13,11 @@ ACTION_KEY = "action"
 OBS_KEY = "observation"
 
 STEP_INDEX_KEY = "step_index"
+TASK_SEED_KEY = "task_seed"
 
-DONE_RUNNING     = 0
-DONE_TERMINATED  = 1
-DONE_TRUNCATED   = 2
+DONE_RUNNING = 0
+DONE_TERMINATED = 1
+DONE_TRUNCATED = 2
 
 
 def _np_dtype_for_space(space: gym.Space) -> np.dtype:
@@ -165,9 +166,17 @@ class _EnvInstance:
     Each env instance manages its own episode state — step index, episode index,
     and cumulative rewards — and implements the two-frame boundary sequence: a
     terminal step (``episode_done=1/2``) followed by a reset frame
-    (``episode_done=0``, ``task_done=0``, ``step_index=0``) on the next
+    (    ``episode_done=0``, ``task_done=0``, ``step_index=0``) on the next
     ``step()`` call, with the user's action on the reset-frame call silently
     ignored.
+
+    Seeding: two independent streams with different scopes. A fresh episode
+    seed is drawn from the ``episode_seed`` stream on every reset and passed
+    to ``env.reset(seed=...)`` — per-episode randomness such as the start
+    position. When ``task_seed`` is set, a task seed is drawn from its stream
+    once per task start, held constant within the task, and forwarded on every
+    reset as ``options["task_seed"]`` — per-task randomness such as a
+    procedurally generated map.
     """
 
     def __init__(
@@ -175,6 +184,8 @@ class _EnvInstance:
         env: gym.Env,
         name: str,
         *,
+        episode_seed: int,
+        task_seed: int | None = None,
         reset_reward: float = 0.0,
         episode_reset_options: dict | None = None,
         task_reset_options: dict | None = None,
@@ -186,6 +197,14 @@ class _EnvInstance:
         self._episode_reset_options = dict(episode_reset_options or {})
         self._task_reset_options = dict(task_reset_options or {})
         self._episodes_per_task = int(episodes_per_task)
+
+        # Episode-seed stream advances on every reset; task-seed stream (when
+        # configured) advances only at task starts.
+        self._episode_seed_rng = np.random.default_rng(episode_seed)
+        self._task_seed_rng = (
+            np.random.default_rng(task_seed) if task_seed is not None else None
+        )
+        self._task_seed: int | None = None
 
         # Episode state
         self._needs_initial_reset = True
@@ -269,17 +288,16 @@ class _EnvInstance:
         input_spec = InputSpec(action=FieldSpec(dtype=act_np_dtype, shape=act_shape))
         return single_channel, obs_dtypes, output_spec, input_spec
 
-    def _action_array(self, value: Any, *, dtype: np.dtype) -> np.ndarray:
-        arr = np.asarray(value, dtype=dtype).flatten()
-        if arr.size == 1:
-            return np.array(arr.item(), dtype=dtype)
-        return np.asarray(value, dtype=dtype)
-
     def sample_random_input(self) -> dict:
-        """Sample a random action as a ``dict`` with a flat ``"action"`` key."""
+        """Sample a random action as a ``dict`` with a flat ``"action"`` key.
+
+        The array matches :attr:`input_spec` — same dtype and shape.
+        """
+        spec = self._input_spec.action
+        act_dtype = cast(np.dtype, spec.dtype)
         raw = self._env.action_space.sample()
-        act_dtype = cast(np.dtype, self._input_spec.action.dtype)
-        return {ACTION_KEY: self._action_array(raw, dtype=act_dtype)}
+        action = np.asarray(raw, dtype=act_dtype).reshape(spec.shape)
+        return {ACTION_KEY: action}
 
     def _require_input(self, input_dict: Any) -> np.ndarray:
         """Extract and validate the ``"action"`` key from an input dict."""
@@ -353,12 +371,24 @@ class _EnvInstance:
         return options
 
     def _do_reset(self, *, task_start: bool) -> tuple[dict, None, None]:
-        """Call env.reset() and return the reset-frame output; no metric results."""
+        """Call env.reset() and return the reset-frame output; no metric results.
+
+        Every reset draws a fresh episode seed for ``env.reset(seed=...)``.
+        When a task-seed stream is configured, a new task seed is drawn only at
+        task starts and forwarded as ``options["task_seed"]`` on every reset in
+        the task, so the env can hold its problem instance fixed across the
+        task's episodes.
+        """
+        if task_start and self._task_seed_rng is not None:
+            self._task_seed = int(self._task_seed_rng.integers(0, 2**31))
+        episode_seed = int(self._episode_seed_rng.integers(0, 2**31))
         reset_options = self._reset_options_for_boundary(task_start=task_start)
-        if reset_options:
-            obs, info = self._env.reset(options=reset_options)
-        else:
-            obs, info = self._env.reset()
+        if self._task_seed is not None:
+            reset_options[TASK_SEED_KEY] = self._task_seed
+        obs, info = self._env.reset(
+            seed=episode_seed,
+            options=reset_options or None,
+        )
         self._step_index = 0
         self._episode_cum_reward = 0.0
 

@@ -46,7 +46,7 @@ from mouse_gym import EnvConfig, make_env
 
 cfg = EnvConfig(
     id="CartPole-v1",
-    reset_seed=0,
+    episode_seed=0,
     episodes_per_task=5,
 )
 env = make_env(cfg)
@@ -67,6 +67,8 @@ env.close()
 - **Dict I/O instead of Gymnasium's action + tuple.** Pass `{"action": ...}` to `step()` (use `sample_random_input()` for random rollouts). Each `step()` returns one dict with named fields — `task_index`, `episode_index`, `step_index`, `reward`, `task_done`, `episode_done`, `observation`, and `info` — rather than `(observation, reward, terminated, truncated, info)`.
 
 - **Tasks group episodes.** A task is a consecutive run of episodes — length set by `episodes_per_task` in `EnvConfig` (default `0`: no task boundary). When a task ends, the next `step()` is a reset frame with `task_index` incremented and `episode_index` reset to `0`. `task_done=2` marks the last step of a task (episode budget exhausted). `task_done=1` is reserved and unused.
+
+- **Two seed streams keep episode and task randomness separate.** `episode_seed` seeds the per-episode stream: a fresh seed is drawn on every episode reset and passed to the underlying `env.reset(seed=...)` — it governs what may vary between episodes (e.g. the start position) while the underlying problem stays the same. `task_seed` (optional) seeds the per-task stream: a new seed is drawn at each task start, held constant within the task, and forwarded to the env on every reset as `options["task_seed"]` — it governs the problem instance itself (e.g. the FrozenLake map, or other procedurally generated variables), so every episode in a task faces the same problem. Envs that don't read `options["task_seed"]` are unaffected.
 
 - **`episode_done` and `task_done` replace `terminated` / `truncated`.** Two independent integer fields per step, both using `0`/`1`/`2`:
   - **`episode_done`** (Gymnasium episode outcome only):
@@ -97,7 +99,7 @@ The notebooks in [`examples/`](examples/) are the detailed reference for `EnvCon
 
 **[02 — Multiple envs](examples/02_multi_env.ipynb)** — Combine several env instances with `make_group_env`. Step heterogeneous envs (different ids, spaces, and seeds) in one loop; optionally parallelize with `max_threads`; read flat `list[dict]` inputs and outputs; use `env.names`, `input_specs[i]`, and `output_specs[i]`.
 
-**[03 — RNG seeding control](examples/03_rng_seeding_control.ipynb)** — Reproduce or vary behavior with `reset_seed` (internal reset stream) and `env.action_space.seed()` (random action sampling), independently.
+**[03 — RNG seeding control](examples/03_rng_seeding_control.ipynb)** — Reproduce or vary behavior with `episode_seed` (per-episode reset randomness), `task_seed` (per-task problem instance, forwarded as `options["task_seed"]`), and `env.action_space.seed()` (random action sampling), independently.
 
 **[04 — Metrics](examples/04_metrics.ipynb)** — Read episode returns and lengths from `env.metrics`, clear between eval runs, and aggregate stats across a `GroupEnv`.
 
