@@ -5,15 +5,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-18
+
+First stable release. The public step contract (`episode_done` / `task_done`, task grouping, reset-free `step()` stream) is the API this version commits to.
+
 ### Added
 - `GroupEnv` / `make_group_env` accept `max_threads` to step constituent envs on a thread pool (`0` = calling thread, default).
-- `Metrics.task_cum_rewards` / `Metrics.task_lengths` and matching `GroupMetrics` properties accumulate reward and length sums for each completed task (`done` 3/4).
+- `Metrics.task_cum_rewards` / `Metrics.task_lengths` and matching `GroupMetrics` properties accumulate reward and length sums for each completed task (`task_done` 2).
 
 ### Changed
+- Step output field `done` renamed to `episode_done` (`0`/`1`/`2` from Gymnasium only). New `task_done` field uses the same codes (`0`; reserved `1`; `2` when `episodes_per_task` is reached). The last episode of a task now emits both.
 - Minimum Python version raised from 3.12 to 3.13.
 - Step output field `time` renamed to `step_index` (0-based within the episode; resets on episode restart).
 - `episode_index` now counts episodes within the current task and resets to `0` when a new task starts.
-- Step output dict key order is now `task_index`, `episode_index`, `step_index`, `reward`, `done`, `observation`, `info`.
+- Step output dict key order is now `task_index`, `episode_index`, `step_index`, `reward`, `episode_done`, `task_done`, `observation`, `info`.
 
 ## [0.1.0] - 2026-07-07
 

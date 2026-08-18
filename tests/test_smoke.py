@@ -10,10 +10,8 @@ import pytest
 
 from mouse_gym import EnvConfig, FieldSpec, InputSpec, Metrics, OutputSpec, make_env, make_group_env
 from mouse_gym.format import (
-    DONE_EPISODE_TERMINATED,
-    DONE_EPISODE_TRUNCATED,
-    DONE_TASK_TERMINATED,
-    DONE_TASK_TRUNCATED,
+    DONE_TERMINATED,
+    DONE_TRUNCATED,
 )
 
 
@@ -58,7 +56,8 @@ def test_cartpole_step_contract() -> None:
                 "episode_index",
                 "step_index",
                 "reward",
-                "done",
+                "episode_done",
+                "task_done",
                 "observation",
                 "info",
             ]
@@ -111,7 +110,11 @@ def test_output_spec_and_input_spec_cartpole() -> None:
         assert ospec.step_index.dtype == np.dtype(np.int64)
         assert ospec.step_index.shape == ()
         assert ospec.reward.dtype == np.dtype(np.float32)
-        assert ospec.done.dtype == np.dtype(np.int64)
+        assert ospec.episode_done.dtype == np.dtype(np.int64)
+        assert ospec.episode_done.shape == ()
+        assert ospec.task_done.dtype == np.dtype(np.int64)
+        assert ospec.task_done.shape == ()
+        assert not hasattr(ospec, "done")
         assert ospec.episode_index.dtype == int
         assert ospec.task_index.dtype == int
         assert not hasattr(ospec, "q_star")
@@ -262,7 +265,8 @@ def test_info_keys_passthrough() -> None:
             "episode_index",
             "step_index",
             "reward",
-            "done",
+            "episode_done",
+            "task_done",
             "observation",
             "info",
         ]
@@ -318,7 +322,8 @@ def test_autoreset_frame_uses_reset_reward() -> None:
         output, _step = _roll_until_autoreset(env)
         assert output["step_index"].item() == 0
         assert output["reward"].item() == 0.0
-        assert output["done"].item() == 0
+        assert output["episode_done"].item() == 0
+        assert output["task_done"].item() == 0
         assert len(env.metrics.episode_cum_rewards) >= 1
     finally:
         env.close()
@@ -337,7 +342,8 @@ def test_initial_reset_frame_uses_reset_reward() -> None:
         assert output["step_index"].item() == 0
         assert "action" not in output
         assert output["reward"].item() == -1.0
-        assert output["done"].item() == 0
+        assert output["episode_done"].item() == 0
+        assert output["task_done"].item() == 0
         assert output["task_index"] == 0
         assert env.metrics.episode_cum_rewards == []
     finally:
@@ -449,29 +455,77 @@ def test_box_action_preserves_native_float64_dtype() -> None:
 
 
 def test_task_done_codes_fire_at_task_boundary() -> None:
-    cfg = EnvConfig(
-        id="CartPole-v1",
-        reset_seed=0,
-        episodes_per_task=2,
-        kwargs={"max_episode_steps": 10},
-    )
-    env = make_env(cfg)
-    try:
-        episode_dones: list[int] = []
-        task_dones: list[int] = []
-        for _ in range(300):
-            output = env.step(env.sample_random_input())
-            done = int(output["done"].item())
-            if done in (DONE_EPISODE_TERMINATED, DONE_EPISODE_TRUNCATED):
-                episode_dones.append(done)
-            elif done in (DONE_TASK_TERMINATED, DONE_TASK_TRUNCATED):
-                task_dones.append(done)
-        assert len(task_dones) > 0, "expected some task-done steps within 300 steps"
-        assert len(episode_dones) > 0, "expected some episode-done steps within 300 steps"
-        output = env.step(env.sample_random_input())
-        assert output["task_index"] >= 0
-    finally:
-        env.close()
+    class ImmediateTerminateEnv(gym.Env):
+        observation_space = gym.spaces.Discrete(1)
+        action_space = gym.spaces.Discrete(2)
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            return 0, {}
+
+        def step(self, action):
+            return 0, 1.0, True, False, {}
+
+    class ImmediateTruncateEnv(gym.Env):
+        observation_space = gym.spaces.Discrete(1)
+        action_space = gym.spaces.Discrete(2)
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            return 0, {}
+
+        def step(self, action):
+            return 0, 1.0, False, True, {}
+
+    def _collect_boundaries(env_fn: type[gym.Env]) -> tuple[list[int], list[int]]:
+        cfg = EnvConfig(
+            reset_seed=0,
+            episodes_per_task=2,
+            env_fn=env_fn,
+        )
+        env = make_env(cfg)
+        try:
+            episode_dones: list[int] = []
+            task_dones: list[int] = []
+            for _ in range(20):
+                output = env.step(env.sample_random_input())
+                episode_done = int(output["episode_done"].item())
+                task_done = int(output["task_done"].item())
+                assert task_done != DONE_TERMINATED
+                if episode_done != 0:
+                    episode_dones.append(episode_done)
+                    task_dones.append(task_done)
+            return episode_dones, task_dones
+        finally:
+            env.close()
+
+    term_episode, term_task = _collect_boundaries(ImmediateTerminateEnv)
+    assert term_episode[:4] == [
+        DONE_TERMINATED,
+        DONE_TERMINATED,
+        DONE_TERMINATED,
+        DONE_TERMINATED,
+    ]
+    assert term_task[:4] == [
+        0,
+        DONE_TRUNCATED,
+        0,
+        DONE_TRUNCATED,
+    ]
+
+    trunc_episode, trunc_task = _collect_boundaries(ImmediateTruncateEnv)
+    assert trunc_episode[:4] == [
+        DONE_TRUNCATED,
+        DONE_TRUNCATED,
+        DONE_TRUNCATED,
+        DONE_TRUNCATED,
+    ]
+    assert trunc_task[:4] == [
+        0,
+        DONE_TRUNCATED,
+        0,
+        DONE_TRUNCATED,
+    ]
 
 
 def test_step_index_resets_on_episode_restart() -> None:
@@ -491,7 +545,8 @@ def test_step_index_resets_on_episode_restart() -> None:
             output = env.step(env.sample_random_input())
             cur = int(output["step_index"].item())
             if cur == 0 and prev > 0:
-                assert int(output["done"].item()) == 0
+                assert int(output["episode_done"].item()) == 0
+                assert int(output["task_done"].item()) == 0
                 return
             if cur > 0:
                 saw_nonzero = True
@@ -669,7 +724,9 @@ def test_group_env_max_threads_distributes_steps() -> None:
         assert env.names == ("cp-0", "cp-1", "cp-2", "cp-3")
         for o in outputs:
             assert "observation" in o
-            assert "done" in o
+            assert "episode_done" in o
+            assert "task_done" in o
+            assert "done" not in o
     finally:
         env.close()
 
@@ -691,7 +748,8 @@ def test_group_env_max_threads_matches_sequential_contract() -> None:
             thr_out = threaded.step(thr_in)
             assert len(seq_out) == len(thr_out)
             for s, t in zip(seq_out, thr_out):
-                assert int(s["done"]) == int(t["done"])
+                assert int(s["episode_done"]) == int(t["episode_done"])
+                assert int(s["task_done"]) == int(t["task_done"])
                 assert int(s["step_index"]) == int(t["step_index"])
                 assert int(s["episode_index"]) == int(t["episode_index"])
                 assert int(s["task_index"]) == int(t["task_index"])

@@ -22,18 +22,20 @@ class EnvConfig:
             set, otherwise to the factory callable's ``__name__`` (named functions
             and classes only — anonymous ``lambda`` factories require an explicit
             ``name``).
-        episodes_per_task: Number of episodes before the task terminates. Defaults to
-            ``0`` (unlimited) — the task boundary (done codes 3/4) never fires
-            automatically.
+        episodes_per_task: Number of episodes before the task is truncated
+            (``task_done=2``). Defaults to ``0`` (unlimited) — the task boundary
+            never fires automatically. ``task_done=1`` (task terminated) is
+            reserved and unused.
         kwargs: Extra keyword arguments forwarded to ``gymnasium.make`` (``id`` configs only).
         episode_reset_options: Options forwarded to underlying ``env.reset(options=...)``
             inside ``step()`` (every reset frame).
         task_reset_options: Options overlaid on ``episode_reset_options`` when a
-            reset frame starts a new task (after ``done`` 3/4).
+            reset frame starts a new task (after ``task_done`` 2).
         render: Enable render mode (``"human"``) for ``id`` configs when not already in
             ``kwargs``.
-        reset_reward: Reward value on reset frames (``step_index=0``, ``done=0`` outputs
-            from ``step()``; default ``0.0``).
+        reset_reward: Reward value on reset frames (``step_index=0``,
+            ``episode_done=0``, ``task_done=0`` outputs from ``step()``; default
+            ``0.0``).
     """
 
     reset_seed: int

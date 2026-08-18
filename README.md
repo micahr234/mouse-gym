@@ -2,19 +2,18 @@
 
 <p align="center"><img src="https://raw.githubusercontent.com/micahr234/mouse-gym/main/mouse-gym.png" width="400"/></p>
 
-> **Warning:** Mouse Gym is in early development and is not yet ready for production use. APIs may change without notice.
+Traditional episodic reinforcement learning typically measures how well a policy performs within an episode. What it does not directly measure is how quickly an agent can **improve after experiencing multiple episodes**.
 
-Imagine an agent deployed to real users. It attempts a task, gets feedback, and learns something useful about how to complete that task. Then the session ends. Some time later, a similar situation recurs. But in the standard episodic setup, both the agent and the environment are treated as if they are starting from scratch. The task begins again, the history is gone, and the agent has to repeat the same learning process all over again. It must relearn what it already discovered because the continuity between interactions has been erased.
+**mouse-gym** recasts Gymnasium environments around this idea. Instead of treating each episode as an isolated trial, it groups multiple episodes into a **task**. Episodes within a task share the same underlying problem, so the agent can remember previous attempts, adapt, and improve while it works.
 
-Humans do not learn this way. In the real world, people improve after attempting tasks multiple times. They learn on-the-job, make mistakes, adapt, and become better as they work. If we want agents that do not feel like retraining a new hire every single day, we have to train them to improve as related experience accumulates.
+The question becomes not just **How well can an agent perform a task?** but **How quickly can it improve as it gains experience with that task?** Adaptation happens within a task, across episodes — the same thing people do when they learn on the job.
 
-That shifts the focus from **zero-shot performance** to **few-shot improvement**. The question is no longer how well an agent does the first time it sees a problem, but how quickly it gets better when a similar situation comes around again. To measure that, you have to watch performance across repeated episodes, not judge a single isolated trial.
-
-Gymnasium's standard loop treats every episode as an isolated trial: reset the environment, rollout the episode out, repeat. **mouse-gym** groups consecutive episodes on the same environment into a **task** and runs the whole thing as one continuous stream. You only ever call `step()`, and episode and task boundaries show up as fields in the output.
+mouse-gym preserves episode boundaries while presenting experience as a continuous stream, so recurrent models, transformers, and other adaptive agents can carry information forward across episodes.
 
 
 ## News
 
+- **2026-08-18 — 1.0.0** First stable release. Public step contract is `episode_done` / `task_done` on a reset-free `step()` stream.
 - **2026-07-07 — NumPy I/O** Step inputs and outputs use NumPy arrays (Gymnasium-native types). PyTorch is no longer required.
 - **2026-07-02 — `tracker` → `metrics`** Renamed `env.tracker` / `Tracker` / `GroupTracker` to `env.metrics` / `Metrics` / `GroupMetrics`. Example notebook renamed to [04 — Metrics](examples/04_metrics.ipynb).
 - **2026-06-29 — Repository split** Mouse Gym is now its own package. Reset-free rollout infrastructure lives here; custom environment implementations live elsewhere.
@@ -63,19 +62,22 @@ env.close()
 
 **mouse-gym** builds on [Gymnasium](https://gymnasium.farama.org/) — you wrap ordinary Gymnasium envs and keep their observations, rewards, and spaces. What's different is the rollout interface:
 
-- **Reset-free rollouts.** Only call `step()` — `SingleEnv.reset()` is not part of the API, including at task boundaries. When an episode or task ends, the next `step()` returns a **reset frame**: initial observation, `step_index=0`, `done=0`, `reset_reward`; the input is ignored. (Mouse-gym calls the underlying env's Gymnasium `reset()` internally on that step — you never call it yourself.) One continuous loop; boundaries are fields in the output, not a separate `reset()` before `step()`.
+- **Reset-free rollouts.** Only call `step()` — `SingleEnv.reset()` is not part of the API, including at task boundaries. When an episode or task ends, the next `step()` returns a **reset frame**: initial observation, `step_index=0`, `episode_done=0`, `task_done=0`, `reset_reward`; the input is ignored. (Mouse-gym calls the underlying env's Gymnasium `reset()` internally on that step — you never call it yourself.) One continuous loop; boundaries are fields in the output, not a separate `reset()` before `step()`.
 
-- **Dict I/O instead of Gymnasium's action + tuple.** Pass `{"action": ...}` to `step()` (use `sample_random_input()` for random rollouts). Each `step()` returns one dict with named fields — `task_index`, `episode_index`, `step_index`, `reward`, `done`, `observation`, and `info` — rather than `(observation, reward, terminated, truncated, info)`.
+- **Dict I/O instead of Gymnasium's action + tuple.** Pass `{"action": ...}` to `step()` (use `sample_random_input()` for random rollouts). Each `step()` returns one dict with named fields — `task_index`, `episode_index`, `step_index`, `reward`, `episode_done`, `task_done`, `observation`, and `info` — rather than `(observation, reward, terminated, truncated, info)`.
 
-- **Tasks group episodes.** A task is a consecutive run of episodes — length set by `episodes_per_task` in `EnvConfig` (default `0`: no task boundary). When a task ends, the next `step()` is a reset frame with `task_index` incremented and `episode_index` reset to `0`. `done` codes `3`/`4` mark the last step of a task.
+- **Tasks group episodes.** A task is a consecutive run of episodes — length set by `episodes_per_task` in `EnvConfig` (default `0`: no task boundary). When a task ends, the next `step()` is a reset frame with `task_index` incremented and `episode_index` reset to `0`. `task_done=2` marks the last step of a task (episode budget exhausted). `task_done=1` is reserved and unused.
 
-- **`done` replaces `terminated` / `truncated`.** One integer field per step instead of two booleans:
-  - `0` — **Running.** A normal mid-episode step, or a reset frame (`step_index=0`, `reward=reset_reward`).
-  - `1` — **Episode terminated.** Underlying env returned `terminated=True` and this is not the last episode in the task. Do not bootstrap; the next `step()` is a reset frame (next episode, same task).
-  - `2` — **Episode truncated.** Underlying env returned `truncated=True` and this is not the last episode in the task. Same semantics as `1`.
-  - `3` — **Task terminated.** `terminated=True` on the last episode in the task (per `episodes_per_task`). Bootstrap here; the next `step()` is a reset frame that starts a new task (`task_index` increments, `episode_index` resets to `0`).
-  - `4` — **Task truncated.** `truncated=True` on the last episode in the task. Same bootstrap semantics as `3`.
-  - With `episodes_per_task=0` (default), codes `3` and `4` never fire. Gymnasium has no task grouping or equivalent codes.
+- **`episode_done` and `task_done` replace `terminated` / `truncated`.** Two independent integer fields per step, both using `0`/`1`/`2`:
+  - **`episode_done`** (Gymnasium episode outcome only):
+    - `0` — **Running.** A normal mid-episode step, or a reset frame (`step_index=0`, `reward=reset_reward`).
+    - `1` — **Episode terminated.** Underlying env returned `terminated=True`. Do not bootstrap; the next `step()` is a reset frame.
+    - `2` — **Episode truncated.** Underlying env returned `truncated=True`. Same episode-end semantics as `1`.
+  - **`task_done`** (task-boundary outcome; not copied from Gymnasium):
+    - `0` — **Not a task boundary.**
+    - `1` — **Task terminated.** Reserved; never emitted today (no task-success/failure signal yet).
+    - `2` — **Task truncated.** This episode completed and it was the last episode in the task (`episodes_per_task` reached). Bootstrap here; the next `step()` is a reset frame that starts a new task (`task_index` increments, `episode_index` resets to `0`).
+  - On the last episode of a task both fields fire together — e.g. `episode_done=1` and `task_done=2`. With `episodes_per_task=0` (default), `task_done` stays `0`. Gymnasium has no task grouping or equivalent codes.
 
 ## Additions to Gymnasium
 
@@ -91,7 +93,7 @@ On top of the standard env API, mouse-gym adds:
 
 The notebooks in [`examples/`](examples/) are the detailed reference for `EnvConfig`, input/output fields, and day-to-day usage. Install notebook dependencies with `pip install "mouse-gym[examples]"`, then work through them in order:
 
-**[01 — Random rollout](examples/01_random_rollout.ipynb)** — Start here. Build an env from `EnvConfig`, run the reset-free `step()` loop, and inspect what comes back on each call: input dict (`action`), output dict (`task_index`, `episode_index`, `step_index`, `reward`, `done`, `observation`, `info`), reset frames, and `done` codes. Also covers `input_spec` / `output_spec` and optional `env_fn` factories.
+**[01 — Random rollout](examples/01_random_rollout.ipynb)** — Start here. Build an env from `EnvConfig`, run the reset-free `step()` loop, and inspect what comes back on each call: input dict (`action`), output dict (`task_index`, `episode_index`, `step_index`, `reward`, `episode_done`, `task_done`, `observation`, `info`), reset frames, and done codes. Also covers `input_spec` / `output_spec` and optional `env_fn` factories.
 
 **[02 — Multiple envs](examples/02_multi_env.ipynb)** — Combine several env instances with `make_group_env`. Step heterogeneous envs (different ids, spaces, and seeds) in one loop; optionally parallelize with `max_threads`; read flat `list[dict]` inputs and outputs; use `env.names`, `input_specs[i]`, and `output_specs[i]`.
 
