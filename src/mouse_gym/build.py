@@ -82,6 +82,7 @@ def _make_env_instance(config: EnvConfig) -> _EnvInstance:
         name=name,
         seed=config.seed,
         reset_reward=config.reset_reward,
+        reward_scale=config.reward_scale,
         episode_reset_options=config.episode_reset_options,
         task_reset_options=config.task_reset_options,
         episodes_per_task=config.episodes_per_task,

@@ -459,6 +459,38 @@ def test_initial_reset_frame_uses_reset_reward() -> None:
         env.close()
 
 
+def test_reward_scale_applies_to_step_output_not_metrics() -> None:
+    class ConstRewardEnv(gym.Env):
+        observation_space = gym.spaces.Discrete(1)
+        action_space = gym.spaces.Discrete(1)
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            return 0, {}
+
+        def step(self, action):
+            return 0, 2.0, True, False, {}
+
+    env = make_env(
+        EnvConfig(
+            seed=0,
+            env_fn=ConstRewardEnv,
+            reward_scale=0.5,
+            reset_reward=-1.0,
+            episodes_per_task=1,
+        )
+    )
+    try:
+        reset = env.step(env.sample_random_input())
+        assert reset["reward"].item() == -1.0
+        step = env.step(env.sample_random_input())
+        assert step["reward"].item() == 1.0
+        assert env.metrics.episode_cum_rewards == [2.0]
+        assert env.metrics.task_cum_rewards == [2.0]
+    finally:
+        env.close()
+
+
 def _roll_until_autoreset(env, *, max_steps: int = 500) -> tuple[dict, int]:
     output = env.step(env.sample_random_input())
     for step in range(1, max_steps):

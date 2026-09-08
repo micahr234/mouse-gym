@@ -184,6 +184,7 @@ class _EnvInstance:
         *,
         seed: int,
         reset_reward: float = 0.0,
+        reward_scale: float = 1.0,
         episode_reset_options: dict | None = None,
         task_reset_options: dict | None = None,
         episodes_per_task: int,
@@ -191,6 +192,7 @@ class _EnvInstance:
         self._env = env
         self._name = name
         self._reset_reward = float(reset_reward)
+        self._reward_scale = float(reward_scale)
         self._episode_reset_options = dict(episode_reset_options or {})
         self._task_reset_options = dict(task_reset_options or {})
         self._episodes_per_task = int(episodes_per_task)
@@ -319,7 +321,7 @@ class _EnvInstance:
         return arr.reshape(getattr(space, "shape", ()) or ())
 
     def _reward_array(self, raw_reward: Any) -> np.ndarray:
-        return np.asarray(raw_reward, dtype=np.float32)
+        return np.asarray(float(raw_reward) * self._reward_scale, dtype=np.float32)
 
     def _obs_entry(self, obs: Any) -> dict[str, np.ndarray | dict[str, np.ndarray]]:
         """Build observation field(s) from a single-env observation."""
@@ -510,7 +512,8 @@ class SingleEnv:
         task_index (int)            — task counter
         episode_index (int)         — episode counter within the current task (resets at task end)
         step_index (int64 array)    — step index within the episode (0-based; resets on episode restart)
-        reward (float32 array)      — raw env reward from the underlying Gymnasium step
+        reward (float32 array)      — Gymnasium step reward × ``reward_scale``;
+                                      ``reset_reward`` (unscaled) on reset frames
         task_done (int64 array)     — 0=running, 1=task terminated (reserved, unused),
                                       2=task truncated (episodes_per_task reached)
         episode_done (int64 array)  — 0=running, 1=terminated, 2=truncated (Gymnasium only)

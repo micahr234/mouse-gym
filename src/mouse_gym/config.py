@@ -45,7 +45,11 @@ class EnvConfig:
             ``kwargs``.
         reset_reward: Reward value on reset frames (``step_index=0``,
             ``episode_done=0``, ``task_done=0`` outputs from ``step()``; default
-            ``0.0``).
+            ``0.0``). Not multiplied by ``reward_scale``.
+        reward_scale: Multiplier applied to the underlying Gymnasium step reward
+            in the ``step()`` output (default ``1.0``). Reset-frame rewards use
+            ``reset_reward`` as given. ``env.metrics`` records raw (unscaled)
+            episode and task returns.
     """
 
     seed: int
@@ -58,6 +62,7 @@ class EnvConfig:
     render: bool = False
     env_fn: Callable[[], Any] | None = None
     reset_reward: float = 0.0
+    reward_scale: float = 1.0
 
     def __post_init__(self) -> None:
         has_id = self.id is not None

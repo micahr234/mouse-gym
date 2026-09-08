@@ -1,9 +1,14 @@
 # Changelog
 
-All notable changes to mouse-gym are documented here.
-Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Added
+- `EnvConfig.reward_scale` multiplies per-step `reward` in the `step()` output (default `1.0`). Reset-frame `reset_reward` is unchanged. `env.metrics` still records raw (unscaled) returns.
 
 ### Changed
 - `EnvConfig.reset_seed` renamed to `seed`, and the stream now advances once per task instead of once per episode: the drawn value is passed to the underlying `env.reset(seed=...)` at the task-start reset only, and episode resets within a task pass no seed (Gymnasium's seed-once-per-session convention, applied per task). A whole task is reproducible from its seed while episode-level randomness still varies; envs that regenerate their problem instance when `reset` receives an explicit seed present the same instance to every episode in the task. Previously a fresh seed was drawn and passed on every episode reset.
