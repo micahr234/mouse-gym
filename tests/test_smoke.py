@@ -459,7 +459,7 @@ def test_initial_reset_frame_uses_reset_reward() -> None:
         env.close()
 
 
-def test_reward_scale_applies_to_step_output_not_metrics() -> None:
+def test_reward_scale_applies_before_pipeline() -> None:
     class ConstRewardEnv(gym.Env):
         observation_space = gym.spaces.Discrete(1)
         action_space = gym.spaces.Discrete(1)
@@ -485,8 +485,8 @@ def test_reward_scale_applies_to_step_output_not_metrics() -> None:
         assert reset["reward"].item() == -1.0
         step = env.step(env.sample_random_input())
         assert step["reward"].item() == 1.0
-        assert env.metrics.episode_cum_rewards == [2.0]
-        assert env.metrics.task_cum_rewards == [2.0]
+        assert env.metrics.episode_cum_rewards == [1.0]
+        assert env.metrics.task_cum_rewards == [1.0]
     finally:
         env.close()
 

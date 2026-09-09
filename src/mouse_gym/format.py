@@ -104,13 +104,13 @@ class Metrics:
     Attributes
     ----------
     episode_cum_rewards:
-        List of raw (unscaled) cumulative rewards for every episode completed
-        since the last :meth:`clear` call.
+        List of cumulative rewards for every episode completed since the last
+        :meth:`clear` call.
     episode_lengths:
         List of episode step counts for every completed episode since the last
         :meth:`clear` call.
     task_cum_rewards:
-        List of raw cumulative rewards summed across every episode in each
+        List of cumulative rewards summed across every episode in each
         completed task since the last :meth:`clear` call.
     task_lengths:
         List of total step counts summed across every episode in each completed
@@ -140,7 +140,7 @@ class Metrics:
 
     @property
     def episode_cum_rewards(self) -> list[float]:
-        """Raw cumulative rewards for completed episodes."""
+        """Cumulative rewards for completed episodes."""
         return self._episode_cum_rewards
 
     @property
@@ -150,7 +150,7 @@ class Metrics:
 
     @property
     def task_cum_rewards(self) -> list[float]:
-        """Raw cumulative rewards summed across episodes in completed tasks."""
+        """Cumulative rewards summed across episodes in completed tasks."""
         return self._task_cum_rewards
 
     @property
@@ -184,7 +184,6 @@ class _EnvInstance:
         *,
         seed: int,
         reset_reward: float = 0.0,
-        reward_scale: float = 1.0,
         episode_reset_options: dict | None = None,
         task_reset_options: dict | None = None,
         episodes_per_task: int,
@@ -192,7 +191,6 @@ class _EnvInstance:
         self._env = env
         self._name = name
         self._reset_reward = float(reset_reward)
-        self._reward_scale = float(reward_scale)
         self._episode_reset_options = dict(episode_reset_options or {})
         self._task_reset_options = dict(task_reset_options or {})
         self._episodes_per_task = int(episodes_per_task)
@@ -321,7 +319,7 @@ class _EnvInstance:
         return arr.reshape(getattr(space, "shape", ()) or ())
 
     def _reward_array(self, raw_reward: Any) -> np.ndarray:
-        return np.asarray(float(raw_reward) * self._reward_scale, dtype=np.float32)
+        return np.asarray(raw_reward, dtype=np.float32)
 
     def _obs_entry(self, obs: Any) -> dict[str, np.ndarray | dict[str, np.ndarray]]:
         """Build observation field(s) from a single-env observation."""
@@ -425,7 +423,6 @@ class _EnvInstance:
         action = self._prepare_action(action_np)
         obs, raw_reward, terminated, truncated, info = self._env.step(action)
 
-        # Track raw cumulative reward (unscaled) for metrics
         raw_reward_f = float(raw_reward)
         self._episode_cum_reward += raw_reward_f
 
@@ -512,8 +509,8 @@ class SingleEnv:
         task_index (int)            — task counter
         episode_index (int)         — episode counter within the current task (resets at task end)
         step_index (int64 array)    — step index within the episode (0-based; resets on episode restart)
-        reward (float32 array)      — Gymnasium step reward × ``reward_scale``;
-                                      ``reset_reward`` (unscaled) on reset frames
+        reward (float32 array)      — env reward (already × ``reward_scale``);
+                                      ``reset_reward`` on reset frames
         task_done (int64 array)     — 0=running, 1=task terminated (reserved, unused),
                                       2=task truncated (episodes_per_task reached)
         episode_done (int64 array)  — 0=running, 1=terminated, 2=truncated (Gymnasium only)
@@ -608,7 +605,7 @@ class GroupMetrics:
     Attributes
     ----------
     episode_cum_rewards:
-        Per-env list of raw cumulative rewards. ``episode_cum_rewards[i]`` is the
+        Per-env list of cumulative rewards. ``episode_cum_rewards[i]`` is the
         list from ``envs[i].metrics.episode_cum_rewards``.
     episode_lengths:
         Per-env list of episode step counts. ``episode_lengths[i]`` is the list

@@ -46,10 +46,10 @@ class EnvConfig:
         reset_reward: Reward value on reset frames (``step_index=0``,
             ``episode_done=0``, ``task_done=0`` outputs from ``step()``; default
             ``0.0``). Not multiplied by ``reward_scale``.
-        reward_scale: Multiplier applied to the underlying Gymnasium step reward
-            in the ``step()`` output (default ``1.0``). Reset-frame rewards use
-            ``reset_reward`` as given. ``env.metrics`` records raw (unscaled)
-            episode and task returns.
+        reward_scale: Multiplier applied to the Gymnasium env reward before the
+            mouse-gym pipeline (default ``1.0``). Scaled rewards flow through
+            ``step()`` output and ``env.metrics``. Reset-frame rewards use
+            ``reset_reward`` as given.
     """
 
     seed: int

@@ -82,7 +82,6 @@ def _make_env_instance(config: EnvConfig) -> _EnvInstance:
         name=name,
         seed=config.seed,
         reset_reward=config.reset_reward,
-        reward_scale=config.reward_scale,
         episode_reset_options=config.episode_reset_options,
         task_reset_options=config.task_reset_options,
         episodes_per_task=config.episodes_per_task,
@@ -91,9 +90,12 @@ def _make_env_instance(config: EnvConfig) -> _EnvInstance:
 
 def _make_plain_single_env(config: EnvConfig) -> gym.Env:
     if config.env_fn is not None:
-        return config.env_fn()
-    assert config.id is not None
-    env_kwargs: dict[str, Any] = dict(config.kwargs or {})
-    if config.render and "render_mode" not in env_kwargs:
-        env_kwargs["render_mode"] = "human"
-    return gym.make(config.id, **env_kwargs)
+        env = config.env_fn()
+    else:
+        assert config.id is not None
+        env_kwargs: dict[str, Any] = dict(config.kwargs or {})
+        if config.render and "render_mode" not in env_kwargs:
+            env_kwargs["render_mode"] = "human"
+        env = gym.make(config.id, **env_kwargs)
+    scale = config.reward_scale
+    return gym.wrappers.TransformReward(env, lambda r: r * scale)
