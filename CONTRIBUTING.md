@@ -26,7 +26,7 @@ If you edit notebooks with a different tool (browser Jupyter, `nbconvert`, scrip
 
 1. Fork the repository and create a branch from `main`.
 2. Make your changes. Keep commits focused — one logical change per commit.
-3. Run tests (`.venv/bin/pytest`) and check for linter errors (`pyright src/`) before opening a PR.
+3. Run tests (`.venv/bin/pytest`) and type-check (`pyright`) before opening a PR. CI runs the same two checks on every pull request and on pushes to `main`.
 4. Open a pull request against `main` with a clear description of what changed and why.
 
 Tests live under [`tests/`](tests/):

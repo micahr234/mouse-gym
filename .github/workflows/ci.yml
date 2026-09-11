@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install package
+        run: |
+          uv venv --python python3.13
+          uv pip install -e ".[dev]" --python .venv/bin/python
+
+      - name: Tests
+        run: .venv/bin/pytest
+
+      - name: Type check
+        run: .venv/bin/pyright
