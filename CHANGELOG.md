@@ -7,9 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- `EnvConfig.reward_scale` multiplies the Gymnasium env reward before the mouse-gym pipeline (default `1.0`), so `step()` output and `env.metrics` both use the scaled value. Reset-frame `reset_reward` is unchanged.
-
 ### Changed
 - `EnvConfig.reset_seed` renamed to `seed`, and the stream now advances once per task instead of once per episode: the drawn value is passed to the underlying `env.reset(seed=...)` at the task-start reset only, and episode resets within a task pass no seed (Gymnasium's seed-once-per-session convention, applied per task). A whole task is reproducible from its seed while episode-level randomness still varies; envs that regenerate their problem instance when `reset` receives an explicit seed present the same instance to every episode in the task. Previously a fresh seed was drawn and passed on every episode reset.
 - Step output dict key order is now `task_index`, `episode_index`, `step_index`, `reward`, `task_done`, `episode_done`, `observation`, `info`.

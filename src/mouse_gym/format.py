@@ -509,8 +509,7 @@ class SingleEnv:
         task_index (int)            — task counter
         episode_index (int)         — episode counter within the current task (resets at task end)
         step_index (int64 array)    — step index within the episode (0-based; resets on episode restart)
-        reward (float32 array)      — env reward (already × ``reward_scale``);
-                                      ``reset_reward`` on reset frames
+        reward (float32 array)      — raw env reward from the underlying Gymnasium step
         task_done (int64 array)     — 0=running, 1=task terminated (reserved, unused),
                                       2=task truncated (episodes_per_task reached)
         episode_done (int64 array)  — 0=running, 1=terminated, 2=truncated (Gymnasium only)

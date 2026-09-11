@@ -90,12 +90,9 @@ def _make_env_instance(config: EnvConfig) -> _EnvInstance:
 
 def _make_plain_single_env(config: EnvConfig) -> gym.Env:
     if config.env_fn is not None:
-        env = config.env_fn()
-    else:
-        assert config.id is not None
-        env_kwargs: dict[str, Any] = dict(config.kwargs or {})
-        if config.render and "render_mode" not in env_kwargs:
-            env_kwargs["render_mode"] = "human"
-        env = gym.make(config.id, **env_kwargs)
-    scale = config.reward_scale
-    return gym.wrappers.TransformReward(env, lambda r: r * scale)
+        return config.env_fn()
+    assert config.id is not None
+    env_kwargs: dict[str, Any] = dict(config.kwargs or {})
+    if config.render and "render_mode" not in env_kwargs:
+        env_kwargs["render_mode"] = "human"
+    return gym.make(config.id, **env_kwargs)
