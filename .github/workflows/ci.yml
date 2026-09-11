@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -18,7 +19,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
 
       - name: Install free-threaded Python and package
         run: |
@@ -26,8 +30,29 @@ jobs:
           uv venv --python 3.14t
           uv pip install -e ".[dev]" --python .venv/bin/python
 
-      - name: Tests
-        run: .venv/bin/pytest
-
       - name: Type check
         run: .venv/bin/pyright
+
+      - name: Run tests
+        run: .venv/bin/pytest -q
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+
+      - name: Install free-threaded Python and build tools
+        run: |
+          uv python install 3.14t
+          uv venv --python 3.14t
+          uv pip install "build>=1.2" "twine>=6.1" --python .venv/bin/python
+
+      - name: Build wheel and sdist
+        run: .venv/bin/python -m build
+
+      - name: Validate distributions
+        run: .venv/bin/python -m twine check dist/*

@@ -1,6 +1,9 @@
 #!/bin/bash
 # Install dependencies and set up the dev environment.
 # Run with: source scripts/install.sh
+#
+# Uses `return` throughout (never `exit`) because this script is sourced —
+# `exit` would terminate the user's shell.
 
 log() {
     echo "[INFO] $1"
@@ -22,22 +25,18 @@ success() {
 install_uv() {
     log "Installing uv package manager..."
 
-    # Check if uv is already installed
     if command -v uv >/dev/null 2>&1; then
         success "uv is already installed: $(uv --version)"
         return
     fi
 
-    # Download and install uv
     if ! curl -LsSf https://astral.sh/uv/install.sh | sh; then
         error "Failed to install uv."
         return 1
     fi
 
-    # Add to PATH for current session
     export PATH="$HOME/.local/bin:$PATH"
 
-    # Verify installation
     if ! command -v uv >/dev/null 2>&1; then
         error "Failed to install uv."
         return 1
@@ -50,7 +49,6 @@ install_uv() {
 setup_venv() {
     log "Creating virtual environment..."
 
-    # Remove existing venv if it exists
     if [ -d ".venv" ]; then
         warn "Removing existing virtual environment..."
         rm -rf .venv
@@ -63,7 +61,6 @@ setup_venv() {
         return 1
     fi
 
-    # Create new virtual environment
     if ! uv venv --python 3.14t; then
         error "Failed to create virtual environment"
         return 1
@@ -81,10 +78,10 @@ setup_venv() {
     success "Project dependencies installed"
 }
 
-# Main installation process: uv, venv, project dependencies.
-# Uses `return` throughout (never `exit`) because this script is sourced —
-# `exit` would terminate the user's shell.
+# Main installation process: uv, venv, project dependencies
 main() {
+    cd "$(dirname "${BASH_SOURCE[0]}")/.." || return 1
+
     echo "Starting Installation"
     echo "=================================="
 
@@ -94,7 +91,9 @@ main() {
 
     echo ""
     echo "Installation complete!"
+    echo ""
+    log "Activate the virtual environment:"
+    echo "  source .venv/bin/activate"
 }
 
-# Run main function
 main "$@"

@@ -8,4 +8,7 @@ build/
 uv.lock
 site/
 .cache/
+.pytest_cache/
 .ipynb_checkpoints/
+.env
+.tmp/

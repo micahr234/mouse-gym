@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Python Virtual Environment
 
-This project uses `uv` with a `.venv` at the repo root (`./mouse-gym/.venv`).
+This project uses `uv` with a `.venv` at the repo root.
 
 ## Rules
 
@@ -19,11 +19,11 @@ This project uses `uv` with a `.venv` at the repo root (`./mouse-gym/.venv`).
 ```bash
 # ❌ BAD
 pip install tensordict
-python -c "import mouse"
+python -c "import mouse_gym"
 jupyter lab examples/
 
 # ✅ GOOD
 uv pip install tensordict --python .venv/bin/python
-.venv/bin/python -c "import mouse"
+.venv/bin/python -c "import mouse_gym"
 .venv/bin/jupyter lab examples/
 ```

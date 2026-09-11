@@ -18,7 +18,7 @@ cd mouse-gym
 source scripts/install.sh
 ```
 
-This installs the package in editable mode with dev dependencies (including Jupyter for [`examples/`](examples/) notebooks). Activate with `source .venv/bin/activate`. The install uses free-threaded CPython (`3.14t`) so `GroupEnv(max_threads>0)` can run constituent env steps in parallel.
+This installs the package in editable mode with the `dev` and `all` extras (`all` bundles `examples`, including Jupyter). Activate with `source .venv/bin/activate`. The install uses free-threaded CPython (`3.14t`) so `GroupEnv(max_threads>0)` can run constituent env steps in parallel.
 
 If you edit notebooks with a different tool (browser Jupyter, `nbconvert`, scripts), clear outputs before committing, e.g. `jupyter nbconvert --clear-output --inplace examples/*.ipynb`.
 
@@ -26,7 +26,12 @@ If you edit notebooks with a different tool (browser Jupyter, `nbconvert`, scrip
 
 1. Fork the repository and create a branch from `main`.
 2. Make your changes. Keep commits focused — one logical change per commit.
-3. Run tests (`.venv/bin/pytest`) and type-check (`pyright`) before opening a PR. CI runs the same two checks on every pull request and on pushes to `main`.
+3. Before opening a PR, run:
+   ```bash
+   pyright
+   pytest
+   ```
+   CI runs the same two checks (plus a wheel/sdist build) on every pull request and on pushes to `main`.
 4. Open a pull request against `main` with a clear description of what changed and why.
 
 Tests live under [`tests/`](tests/):
@@ -41,6 +46,18 @@ If you add a new feature, add or extend a test under [`tests/`](tests/) and/or a
 - Follow the existing patterns: config in `config.py`, build in `build.py`, formatting in `format.py`, public API in `__init__.py`. Third-party envs and Gymnasium wrappers are built by users via `env_fn` rather than bundled integrations. Implementation details belong in code comments and docstrings.
 - Avoid silent fallbacks — if a precondition isn't met, raise a clear error.
 - Comments should explain *why*, not *what*.
+
+## Releasing to PyPI
+
+Publishing is automated by [`.github/workflows/publish.yml`](.github/workflows/publish.yml) using [PyPI trusted publishing](https://docs.pypi.org/trusted-publishers/) (OIDC).
+
+### Publishing a version
+
+1. Bump `version` in `pyproject.toml` on `main`.
+2. Commit, push, and create an annotated tag matching the version (e.g. `v0.1.1` for version `0.1.1`).
+3. Push the tag: `git push origin v0.1.1` — the Publish workflow runs on tag push.
+
+You can also run the workflow manually from the Actions tab (**Publish** → **Run workflow**).
 
 ## Questions
 

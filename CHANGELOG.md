@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `EnvConfig` now raises on `kwargs` or `render` combined with `env_fn` (both apply to `id` configs only) and on negative `episodes_per_task`, instead of silently ignoring them.
 
 ### Fixed
+- `scripts/install.sh` `cd`s to the repo root so it works from any cwd, prints the venv activate hint, and uses `return` throughout so a sourced failure does not kill the calling shell.
 - `sample_random_input()` now returns action arrays matching `input_spec.action.shape`; size-1 Box actions (e.g. Pendulum's `(1,)`) were previously collapsed to 0-d scalars, contradicting the spec.
 
 ## [1.0.0] - 2026-08-18
