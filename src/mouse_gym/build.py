@@ -55,6 +55,9 @@ def make_group_env(configs: list[EnvConfig], *, max_threads: int = 0) -> GroupEn
     - ``0`` (default) — step every env on the calling thread.
     - ``> 0`` — distribute envs across up to ``max_threads`` worker threads
       (capped at the number of envs). Output order matches input order.
+      On free-threaded CPython (``3.14t``) workers can run env steps in
+      parallel. On a GIL-enabled interpreter, cheap Python envs
+      (e.g. CartPole) are usually faster with ``max_threads=0``.
 
     Usage::
 

@@ -210,6 +210,12 @@ class _EnvInstance:
         self._task_cum_reward = 0.0
         self._task_cum_length = 0.0
 
+        # Cache spaces so step() does not hop Gymnasium wrapper properties.
+        self._action_space = env.action_space
+        self._observation_space = env.observation_space
+        self._discrete_action = isinstance(self._action_space, gym.spaces.Discrete)
+        self._multidiscrete_action = isinstance(self._action_space, gym.spaces.MultiDiscrete)
+
         # Spec
         self._obs_channel, self._obs_dtypes, self._output_spec, self._input_spec = (
             self._build_specs()
@@ -235,8 +241,8 @@ class _EnvInstance:
         OutputSpec,
         InputSpec,
     ]:
-        obs_space = self._env.observation_space
-        act_space = self._env.action_space
+        obs_space = self._observation_space
+        act_space = self._action_space
 
         # --- observation side ---
         if isinstance(obs_space, gym.spaces.Dict):
@@ -287,7 +293,7 @@ class _EnvInstance:
         """
         spec = self._input_spec.action
         act_dtype = cast(np.dtype, spec.dtype)
-        raw = self._env.action_space.sample()
+        raw = self._action_space.sample()
         action = np.asarray(raw, dtype=act_dtype).reshape(spec.shape)
         return {ACTION_KEY: action}
 
@@ -304,14 +310,18 @@ class _EnvInstance:
                 f"got keys {sorted(input_dict.keys())}."
             )
         value = cast(Any, input_dict)[ACTION_KEY]
+        if isinstance(value, np.ndarray):
+            return value
         return np.asarray(value)
 
     def _prepare_action(self, action_np: np.ndarray) -> Any:
         """Convert a numpy action array to the format expected by ``gym.Env.step``."""
-        space = self._env.action_space
-        if isinstance(space, gym.spaces.Discrete):
-            return int(np.asarray(action_np).reshape(-1)[0])
-        if isinstance(space, gym.spaces.MultiDiscrete):
+        if self._discrete_action:
+            if action_np.ndim == 0:
+                return int(action_np)
+            return int(action_np.reshape(-1)[0])
+        space = self._action_space
+        if self._multidiscrete_action:
             dtype = getattr(space, "dtype", np.int64)
             return np.asarray(action_np, dtype=dtype).reshape(-1)
         dtype = getattr(space, "dtype", None)
@@ -433,9 +443,6 @@ class _EnvInstance:
         # (2). Task terminated (1) is reserved and never assigned.
         # episodes_per_task == 0 means unlimited: task boundary never fires
         # automatically.
-        last_episode_of_task = self._episodes_per_task > 0 and (
-            self._task_episode_count + 1 == self._episodes_per_task
-        )
         if terminated:
             episode_done = DONE_TERMINATED
         elif truncated:
@@ -443,7 +450,9 @@ class _EnvInstance:
         else:
             episode_done = DONE_RUNNING
 
-        if episode_done != DONE_RUNNING and last_episode_of_task:
+        if episode_done != DONE_RUNNING and self._episodes_per_task > 0 and (
+            self._task_episode_count + 1 == self._episodes_per_task
+        ):
             task_done = DONE_TRUNCATED
         else:
             task_done = DONE_RUNNING
@@ -547,12 +556,12 @@ class SingleEnv:
     @property
     def action_space(self) -> gym.Space:
         """The underlying Gymnasium action space."""
-        return self._env_instance._env.action_space
+        return self._env_instance._action_space
 
     @property
     def observation_space(self) -> gym.Space:
         """The underlying Gymnasium observation space."""
-        return self._env_instance._env.observation_space
+        return self._env_instance._observation_space
 
     def reset(self, **_kwargs: Any) -> None:
         """Not supported — episode and task transitions happen inside ``step()``."""
@@ -671,7 +680,10 @@ class GroupEnv:
 
     With ``max_threads=0`` (default), ``step`` runs every env on the calling thread.
     With ``max_threads > 0``, ``step`` distributes envs across up to ``max_threads``
-    worker threads (capped at ``num_envs``) and preserves output order.
+    worker threads (capped at ``num_envs``) and preserves output order. On
+    free-threaded CPython (``3.14t``) those workers can run env steps in
+    parallel. On a GIL-enabled interpreter, cheap Python envs are usually
+    faster with ``max_threads=0``.
     """
 
     def __init__(self, envs: list[SingleEnv], *, max_threads: int = 0) -> None:

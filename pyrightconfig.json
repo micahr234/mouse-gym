@@ -1,8 +1,11 @@
 {
-  "pythonVersion": "3.13",
+  "pythonVersion": "3.14",
   "venvPath": ".",
   "venv": ".venv",
   "reportPrivateImportUsage": false,
   "include": ["src/mouse_gym", "tests"],
-  "extraPaths": ["src"]
+  "extraPaths": [
+    "src",
+    ".venv/lib/python3.14t/site-packages"
+  ]
 }

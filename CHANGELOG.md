@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- ``bench/bench_env.py``: ``SingleEnv`` / ``GroupEnv`` step rate on
+  CartPole-v1, including ``max_threads``.
+
 ### Changed
+- Minimum Python version raised from 3.13 to 3.14. Development setup (`scripts/install.sh`), CI, publish workflow, and Pyright now target free-threaded Python 3.14t; Python 3.13 is no longer supported. NumPy floor raised to 2.5.3 for 3.14 wheels.
 - `EnvConfig.reset_seed` renamed to `seed`, and the stream now advances once per task instead of once per episode: the drawn value is passed to the underlying `env.reset(seed=...)` at the task-start reset only, and episode resets within a task pass no seed (Gymnasium's seed-once-per-session convention, applied per task). A whole task is reproducible from its seed while episode-level randomness still varies; envs that regenerate their problem instance when `reset` receives an explicit seed present the same instance to every episode in the task. Previously a fresh seed was drawn and passed on every episode reset.
 - Step output dict key order is now `task_index`, `episode_index`, `step_index`, `reward`, `task_done`, `episode_done`, `observation`, `info`.
 - `EnvConfig` now raises on `kwargs` or `render` combined with `env_fn` (both apply to `id` configs only) and on negative `episodes_per_task`, instead of silently ignoring them.

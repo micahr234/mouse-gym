@@ -24,13 +24,13 @@ See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
 ## Install
 
-**Requirements:** Python 3.13+, Gymnasium ≥ 1.3, NumPy ≥ 1.26 (NumPy is also pulled in by Gymnasium).
+**Requirements:** Python 3.14+ (free-threaded **3.14t** recommended for `GroupEnv` threads), Gymnasium ≥ 1.3, NumPy ≥ 2.5 (NumPy is also pulled in by Gymnasium).
 
 ```bash
 pip install mouse-gym
 ```
 
-For development:
+For development (free-threaded Python **3.14t** via uv):
 
 ```bash
 git clone https://github.com/micahr234/mouse-gym.git
@@ -87,7 +87,7 @@ On top of the standard env API, mouse-gym adds:
 
 - **Metrics on the env.** Episode returns and lengths accumulate in `env.metrics`, not in the `step()` return value. When `episodes_per_task > 0`, completed tasks also record reward and length sums in `env.metrics.task_cum_rewards` and `env.metrics.task_lengths`. See [04 — Metrics](examples/04_metrics.ipynb).
 
-- **Grouped envs.** `GroupEnv` steps multiple `SingleEnv` instances in one `step()` call and returns a flat `list[dict]` — useful for mixed or multi-task setups without a vectorized wrapper. By default (`max_threads=0`) stepping is sequential on the calling thread; set `max_threads > 0` to distribute envs across that many worker threads. See [02 — Multiple envs](examples/02_multi_env.ipynb).
+- **Grouped envs.** `GroupEnv` steps multiple `SingleEnv` instances in one `step()` call and returns a flat `list[dict]` — useful for mixed or multi-task setups without a vectorized wrapper. By default (`max_threads=0`) stepping is sequential on the calling thread; set `max_threads > 0` to distribute envs across that many worker threads. On free-threaded CPython (`3.14t`) those workers can run env steps in parallel. On a GIL-enabled interpreter, cheap Python envs such as CartPole are usually faster with `max_threads=0`. See [02 — Multiple envs](examples/02_multi_env.ipynb). `bench/bench_env.py` times `step` for `SingleEnv` and `GroupEnv` widths.
 
 - **Input/output specs.** `input_spec` and `output_spec` describe the construction-time contract for step dict shapes and dtypes (on `GroupEnv`, `input_specs[i]` and `output_specs[i]`). See [01 — Random rollout](examples/01_random_rollout.ipynb).
 

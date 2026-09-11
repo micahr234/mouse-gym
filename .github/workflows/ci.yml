@@ -20,13 +20,10 @@ jobs:
 
       - uses: astral-sh/setup-uv@v6
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-
-      - name: Install package
+      - name: Install free-threaded Python and package
         run: |
-          uv venv --python python3.13
+          uv python install 3.14t
+          uv venv --python 3.14t
           uv pip install -e ".[dev]" --python .venv/bin/python
 
       - name: Tests
