@@ -7,15 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-17
+
+Reward and task boundaries are now callables: shape each step with `reward_transform`, end a task with `terminate_task` (`task_done=1`), or time out after `max_task_episodes` (`task_done=2`).
+
 ### Added
 - ``bench/bench_env.py``: ``SingleEnv`` / ``GroupEnv`` step rate on
   CartPole-v1, including ``max_threads``.
+- `EnvConfig.terminate_task`: optional callable invoked on episode-end
+  steps with the same transition kwargs as `reward_transform`. A truthy
+  return emits `task_done=1`. `max_task_episodes` remains the task-length
+  timeout (`task_done=2`). If both would fire, termination wins.
+- `EnvConfig.reward_transform`: optional callable applied to each
+  Gymnasium step reward and each reset-frame reward before the step
+  output and before episode and task metrics accumulate. Invoked with
+  `step_index`, `episode_index`, `state`, `action`, `reward`, `done`
+  (`episode_done` 0/1/2), and `next_state`. Reset frames pass
+  `step_index=0`, `reward=0.0`, and `action=None`; a task-start reset
+  is also `episode_index=0`.
+- Example notebook [05 — Reward transform and task termination](examples/05_reward_and_task.ipynb)
+  for `reward_transform`, `terminate_task`, and `max_task_episodes`.
 
 ### Changed
 - Minimum Python version raised from 3.13 to 3.14. Development setup (`scripts/install.sh`), CI, publish workflow, and Pyright now target free-threaded Python 3.14t; Python 3.13 is no longer supported. NumPy floor raised to 2.5.3 for 3.14 wheels.
 - `EnvConfig.reset_seed` renamed to `seed`, and the stream now advances once per task instead of once per episode: the drawn value is passed to the underlying `env.reset(seed=...)` at the task-start reset only, and episode resets within a task pass no seed (Gymnasium's seed-once-per-session convention, applied per task). A whole task is reproducible from its seed while episode-level randomness still varies; envs that regenerate their problem instance when `reset` receives an explicit seed present the same instance to every episode in the task. Previously a fresh seed was drawn and passed on every episode reset.
 - Step output dict key order is now `task_index`, `episode_index`, `step_index`, `reward`, `task_done`, `episode_done`, `observation`, `info`.
-- `EnvConfig` now raises on `kwargs` or `render` combined with `env_fn` (both apply to `id` configs only) and on negative `episodes_per_task`, instead of silently ignoring them.
+- `EnvConfig.episodes_per_task` renamed to `max_task_episodes` (task-length cap, parallel to Gymnasium's `max_episode_steps`).
+- `EnvConfig` now raises on `kwargs` or `render` combined with `env_fn` (both apply to `id` configs only) and on negative `max_task_episodes`, instead of silently ignoring them.
+
+### Removed
+- `EnvConfig.reset_reward`. Reset-frame reward is `0` unless
+  `reward_transform` returns a value when `step_index` is `0`.
 
 ### Fixed
 - `scripts/install.sh` `cd`s to the repo root so it works from any cwd, prints the venv activate hint, and uses `return` throughout so a sourced failure does not kill the calling shell.

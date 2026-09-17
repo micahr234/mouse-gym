@@ -1,4 +1,4 @@
-# Mouse Gym 🐭
+# Mouse Gym
 
 <p align="center"><img src="https://raw.githubusercontent.com/micahr234/mouse-gym/main/mouse-gym.png" width="400"/></p>
 
@@ -13,6 +13,7 @@ mouse-gym preserves episode boundaries while presenting experience as a continuo
 
 ## News
 
+- **2026-09-17 — 1.1.0** Reward and task boundaries are now yours to define. `reward_transform` rewrites each step reward (including reset frames — `step_index == 0`, and `episode_index == 0` at a new task) before the output and metrics. `terminate_task` ends a task with `task_done=1`; `max_task_episodes` is the timeout (`task_done=2`). See [05 — Reward transform and task termination](examples/05_reward_and_task.ipynb).
 - **2026-08-18 — 1.0.0** First stable release. Public step contract is `episode_done` / `task_done` on a reset-free `step()` stream.
 - **2026-07-07 — NumPy I/O** Step inputs and outputs use NumPy arrays (Gymnasium-native types). PyTorch is no longer required.
 - **2026-07-02 — `tracker` → `metrics`** Renamed `env.tracker` / `Tracker` / `GroupTracker` to `env.metrics` / `Metrics` / `GroupMetrics`. Example notebook renamed to [04 — Metrics](examples/04_metrics.ipynb).
@@ -47,7 +48,7 @@ from mouse_gym import EnvConfig, make_env
 cfg = EnvConfig(
     id="CartPole-v1",
     seed=0,
-    episodes_per_task=5,
+    max_task_episodes=5,
 )
 env = make_env(cfg)
 
@@ -62,30 +63,30 @@ env.close()
 
 **mouse-gym** builds on [Gymnasium](https://gymnasium.farama.org/) — you wrap ordinary Gymnasium envs and keep their observations, rewards, and spaces. What's different is the rollout interface:
 
-- **Reset-free rollouts.** Only call `step()` — `SingleEnv.reset()` is not part of the API, including at task boundaries. When an episode or task ends, the next `step()` returns a **reset frame**: initial observation, `step_index=0`, `episode_done=0`, `task_done=0`, `reset_reward`; the input is ignored. (Mouse-gym calls the underlying env's Gymnasium `reset()` internally on that step — you never call it yourself.) One continuous loop; boundaries are fields in the output, not a separate `reset()` before `step()`.
+- **Reset-free rollouts.** Only call `step()` — `SingleEnv.reset()` is not part of the API, including at task boundaries. When an episode or task ends, the next `step()` returns a **reset frame**: initial observation, `step_index=0`, `episode_done=0`, `task_done=0`; the input is ignored. Reset-frame reward comes from `reward_transform` (detect a reset with `step_index == 0`; a task-start reset is also `episode_index == 0`) or `0` if no transform is set. (Mouse-gym calls the underlying env's Gymnasium `reset()` internally on that step — you never call it yourself.) One continuous loop; boundaries are fields in the output, not a separate `reset()` before `step()`.
 
 - **Dict I/O instead of Gymnasium's action + tuple.** Pass `{"action": ...}` to `step()` (use `sample_random_input()` for random rollouts). Each `step()` returns one dict with named fields — `task_index`, `episode_index`, `step_index`, `reward`, `task_done`, `episode_done`, `observation`, and `info` — rather than `(observation, reward, terminated, truncated, info)`.
 
-- **Tasks group episodes.** A task is a consecutive run of episodes — length set by `episodes_per_task` in `EnvConfig` (default `0`: no task boundary). When a task ends, the next `step()` is a reset frame with `task_index` incremented and `episode_index` reset to `0`. `task_done=2` marks the last step of a task (episode budget exhausted). `task_done=1` is reserved and unused.
+- **Tasks group episodes.** A task is a consecutive run of episodes. It ends by **timeout** (`max_task_episodes` reached → `task_done=2`) or when `terminate_task` returns true (`task_done=1`). Default is `max_task_episodes=0` and no `terminate_task`: no task boundary. When a task ends, the next `step()` is a reset frame with `task_index` incremented and `episode_index` reset to `0`.
 
 - **Each task is a fresh, seeded Gymnasium session.** `EnvConfig.seed` seeds a stream that advances once per task: the drawn value is passed to the underlying `env.reset(seed=...)` at the task-start reset only, and episode resets within the task pass no seed — Gymnasium's own seed-once-per-session convention, applied per task. A whole task is reproducible from its seed, while episode-level randomness (e.g. the start position) still varies across episodes as the env's RNG continues. Envs that generate their problem instance when `reset` receives an explicit seed (e.g. a procedural map) present the same instance to every episode in the task — no mouse-gym-specific protocol required.
 
 - **`episode_done` and `task_done` replace `terminated` / `truncated`.** Two independent integer fields per step, both using `0`/`1`/`2`:
   - **`episode_done`** (Gymnasium episode outcome only):
-    - `0` — **Running.** A normal mid-episode step, or a reset frame (`step_index=0`, `reward=reset_reward`).
+    - `0` — **Running.** A normal mid-episode step, or a reset frame (`step_index=0`).
     - `1` — **Episode terminated.** Underlying env returned `terminated=True`. Do not bootstrap; the next `step()` is a reset frame.
     - `2` — **Episode truncated.** Underlying env returned `truncated=True`. Same episode-end semantics as `1`.
   - **`task_done`** (task-boundary outcome; not copied from Gymnasium):
     - `0` — **Not a task boundary.**
-    - `1` — **Task terminated.** Reserved; never emitted today (no task-success/failure signal yet).
-    - `2` — **Task truncated.** This episode completed and it was the last episode in the task (`episodes_per_task` reached). Bootstrap here; the next `step()` is a reset frame that starts a new task (`task_index` increments, `episode_index` resets to `0`).
-  - On the last episode of a task both fields fire together — e.g. `episode_done=1` and `task_done=2`. With `episodes_per_task=0` (default), `task_done` stays `0`. Gymnasium has no task grouping or equivalent codes.
+    - `1` — **Task terminated.** `terminate_task` returned true on this episode-end step. Do not bootstrap; the next `step()` is a reset frame that starts a new task.
+    - `2` — **Task truncated.** This episode completed and it was the last episode in the task (`max_task_episodes` reached). Bootstrap here; the next `step()` is a reset frame that starts a new task (`task_index` increments, `episode_index` resets to `0`).
+  - On the last episode of a task both fields fire together — e.g. `episode_done=1` and `task_done=1` or `2`. If `terminate_task` and the episode budget both match, `task_done=1` wins. With `max_task_episodes=0` and no `terminate_task`, `task_done` stays `0`. Gymnasium has no task grouping or equivalent codes.
 
 ## Additions to Gymnasium
 
 On top of the standard env API, mouse-gym adds:
 
-- **Metrics on the env.** Episode returns and lengths accumulate in `env.metrics`, not in the `step()` return value. When `episodes_per_task > 0`, completed tasks also record reward and length sums in `env.metrics.task_cum_rewards` and `env.metrics.task_lengths`. See [04 — Metrics](examples/04_metrics.ipynb).
+- **Metrics on the env.** Episode returns and lengths accumulate in `env.metrics`, not in the `step()` return value. When a task ends (`task_done` 1 or 2), completed tasks also record reward and length sums in `env.metrics.task_cum_rewards` and `env.metrics.task_lengths`. `EnvConfig.reward_transform` is applied to each env step and reset-frame reward before it appears in the step output and before those sums are recorded; it receives `step_index`, `episode_index`, `state`, `action`, `reward`, `done`, and `next_state`. See [04 — Metrics](examples/04_metrics.ipynb) and [05 — Reward transform and task termination](examples/05_reward_and_task.ipynb).
 
 - **Grouped envs.** `GroupEnv` steps multiple `SingleEnv` instances in one `step()` call and returns a flat `list[dict]` — useful for mixed or multi-task setups without a vectorized wrapper. By default (`max_threads=0`) stepping is sequential on the calling thread; set `max_threads > 0` to distribute envs across that many worker threads. On free-threaded CPython (`3.14t`) those workers can run env steps in parallel. On a GIL-enabled interpreter, cheap Python envs such as CartPole are usually faster with `max_threads=0`. See [02 — Multiple envs](examples/02_multi_env.ipynb). `bench/bench_env.py` times `step` for `SingleEnv` and `GroupEnv` widths.
 
@@ -102,6 +103,8 @@ The notebooks in [`examples/`](examples/) are the detailed reference for `EnvCon
 **[03 — RNG seeding control](examples/03_rng_seeding_control.ipynb)** — Reproduce or vary behavior with `seed` (one seed drawn per task; the env is reseeded only at task starts) and `env.action_space.seed()` (random action sampling), independently.
 
 **[04 — Metrics](examples/04_metrics.ipynb)** — Read episode returns and lengths from `env.metrics`, clear between eval runs, and aggregate stats across a `GroupEnv`.
+
+**[05 — Reward transform and task termination](examples/05_reward_and_task.ipynb)** — Shape rewards with `reward_transform` (reset frames are `step_index == 0`; a new task is also `episode_index == 0`), end a task when `terminate_task` returns true (`task_done=1`), and time out after `max_task_episodes` (`task_done=2`).
 
 ## Contributing
 

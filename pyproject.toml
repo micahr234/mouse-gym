@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mouse-gym"
-version = "1.0.0"
+version = "1.1.0"
 description = "Meta-Optimization Using Sequential Experiences — reset-free Gymnasium rollouts"
 readme = "README.md"
 requires-python = ">=3.14"

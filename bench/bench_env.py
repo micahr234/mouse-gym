@@ -21,12 +21,12 @@ from typing import Any
 from mouse_gym import EnvConfig, GroupEnv, SingleEnv, make_env, make_group_env
 
 
-def _config(i: int, *, episodes_per_task: int) -> EnvConfig:
+def _config(i: int, *, max_task_episodes: int) -> EnvConfig:
     return EnvConfig(
         id="CartPole-v1",
         name=f"cartpole_{i}",
         seed=i,
-        episodes_per_task=episodes_per_task,
+        max_task_episodes=max_task_episodes,
     )
 
 
@@ -61,7 +61,7 @@ def main() -> None:
     parser.add_argument("--num-envs", nargs="+", type=int, default=[1, 4, 16, 64])
     parser.add_argument("--threads", nargs="+", type=int, default=[0, 4])
     parser.add_argument("--iters", type=int, default=200)
-    parser.add_argument("--episodes-per-task", type=int, default=5)
+    parser.add_argument("--max-task-episodes", type=int, default=5)
     args = parser.parse_args()
 
     if any(n < 1 for n in args.num_envs):
@@ -69,9 +69,9 @@ def main() -> None:
     if any(t < 0 for t in args.threads):
         raise SystemExit("--threads values must be >= 0")
 
-    print(f"CartPole-v1 | episodes_per_task={args.episodes_per_task}")
+    print(f"CartPole-v1 | max_task_episodes={args.max_task_episodes}")
 
-    single = make_env(_config(0, episodes_per_task=args.episodes_per_task))
+    single = make_env(_config(0, max_task_episodes=args.max_task_episodes))
     print("\n### SingleEnv")
     _bench_env(single, args.iters, "make_env", 1)
     single.close()
@@ -79,7 +79,7 @@ def main() -> None:
     for n in args.num_envs:
         print(f"\n### GroupEnv n={n}")
         for threads in args.threads:
-            configs = [_config(i, episodes_per_task=args.episodes_per_task) for i in range(n)]
+            configs = [_config(i, max_task_episodes=args.max_task_episodes) for i in range(n)]
             env = make_group_env(configs, max_threads=threads)
             _bench_env(env, args.iters, f"max_threads={threads}", n)
             env.close()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Required, TypedDict, cast
@@ -105,7 +106,8 @@ class Metrics:
     ----------
     episode_cum_rewards:
         List of cumulative rewards for every episode completed since the last
-        :meth:`clear` call.
+        :meth:`clear` call. Values use the post-``reward_transform`` rewards,
+        including the reset-frame reward (``step_index == 0``).
     episode_lengths:
         List of episode step counts for every completed episode since the last
         :meth:`clear` call.
@@ -183,17 +185,19 @@ class _EnvInstance:
         name: str,
         *,
         seed: int,
-        reset_reward: float = 0.0,
+        reward_transform: Callable[..., float] | None = None,
         episode_reset_options: dict | None = None,
         task_reset_options: dict | None = None,
-        episodes_per_task: int,
+        max_task_episodes: int,
+        terminate_task: Callable[..., bool] | None = None,
     ):
         self._env = env
         self._name = name
-        self._reset_reward = float(reset_reward)
+        self._reward_transform = reward_transform
         self._episode_reset_options = dict(episode_reset_options or {})
         self._task_reset_options = dict(task_reset_options or {})
-        self._episodes_per_task = int(episodes_per_task)
+        self._max_task_episodes = int(max_task_episodes)
+        self._terminate_task = terminate_task
 
         # Seed stream: advances once per task, consumed at task-start resets.
         self._seed_rng = np.random.default_rng(seed)
@@ -204,6 +208,7 @@ class _EnvInstance:
         self._task_done_pending = False
         self._step_index = 0
         self._episode_index = 0
+        self._state: Any = None
         self._task_episode_count = 0  # episodes completed in current task
         self._task_index = 0
         self._episode_cum_reward = 0.0
@@ -331,6 +336,56 @@ class _EnvInstance:
     def _reward_array(self, raw_reward: Any) -> np.ndarray:
         return np.asarray(raw_reward, dtype=np.float32)
 
+    def _apply_reward_transform(
+        self,
+        *,
+        step_index: int,
+        episode_index: int,
+        state: Any,
+        action: Any,
+        reward: float,
+        done: int,
+        next_state: Any,
+    ) -> float:
+        if self._reward_transform is None:
+            return reward
+        return float(
+            self._reward_transform(
+                step_index=step_index,
+                episode_index=episode_index,
+                state=state,
+                action=action,
+                reward=reward,
+                done=done,
+                next_state=next_state,
+            )
+        )
+
+    def _apply_terminate_task(
+        self,
+        *,
+        step_index: int,
+        episode_index: int,
+        state: Any,
+        action: Any,
+        reward: float,
+        done: int,
+        next_state: Any,
+    ) -> bool:
+        if self._terminate_task is None:
+            return False
+        return bool(
+            self._terminate_task(
+                step_index=step_index,
+                episode_index=episode_index,
+                state=state,
+                action=action,
+                reward=reward,
+                done=done,
+                next_state=next_state,
+            )
+        )
+
     def _obs_entry(self, obs: Any) -> dict[str, np.ndarray | dict[str, np.ndarray]]:
         """Build observation field(s) from a single-env observation."""
         if isinstance(obs, dict):
@@ -386,12 +441,22 @@ class _EnvInstance:
             options=reset_options or None,
         )
         self._step_index = 0
-        self._episode_cum_reward = 0.0
+        reward_f = self._apply_reward_transform(
+            step_index=0,
+            episode_index=self._episode_index,
+            state=self._state,
+            action=None,
+            reward=0.0,
+            done=DONE_RUNNING,
+            next_state=obs,
+        )
+        self._episode_cum_reward = reward_f
+        self._state = obs
 
         return (
             self._make_output(
                 step_index=0,
-                reward=np.array(self._reset_reward, dtype=np.float32),
+                reward=self._reward_array(reward_f),
                 episode_done=DONE_RUNNING,
                 task_done=DONE_RUNNING,
                 obs=obs,
@@ -408,7 +473,7 @@ class _EnvInstance:
 
         ``episode_result`` is ``(cum_reward, length)`` when the episode ended on this
         step, or ``None`` otherwise (including reset frames). ``task_result`` uses the
-        same shape when the task ended on this step (``task_done`` 2), or ``None``.
+        same shape when the task ended on this step (``task_done`` 1 or 2), or ``None``.
         """
         if self._needs_initial_reset:
             self._needs_initial_reset = False
@@ -433,16 +498,11 @@ class _EnvInstance:
         action = self._prepare_action(action_np)
         obs, raw_reward, terminated, truncated, info = self._env.step(action)
 
-        raw_reward_f = float(raw_reward)
-        self._episode_cum_reward += raw_reward_f
-
-        self._step_index += 1
-
         # episode_done comes from Gymnasium; task_done is independent.
-        # Both fields use 0/1/2. Hitting episodes_per_task is task truncation
-        # (2). Task terminated (1) is reserved and never assigned.
-        # episodes_per_task == 0 means unlimited: task boundary never fires
-        # automatically.
+        # Both fields use 0/1/2. Hitting max_task_episodes is task truncation
+        # (2). terminate_task returning true is task termination (1) and
+        # wins if both would fire. max_task_episodes == 0 means no
+        # episode-count timeout.
         if terminated:
             episode_done = DONE_TERMINATED
         elif truncated:
@@ -450,8 +510,33 @@ class _EnvInstance:
         else:
             episode_done = DONE_RUNNING
 
-        if episode_done != DONE_RUNNING and self._episodes_per_task > 0 and (
-            self._task_episode_count + 1 == self._episodes_per_task
+        self._step_index += 1
+
+        state = self._state
+        reward_f = self._apply_reward_transform(
+            step_index=self._step_index,
+            episode_index=self._episode_index,
+            state=state,
+            action=action_np,
+            reward=float(raw_reward),
+            done=episode_done,
+            next_state=obs,
+        )
+        self._episode_cum_reward += reward_f
+        self._state = obs
+
+        if episode_done != DONE_RUNNING and self._apply_terminate_task(
+            step_index=self._step_index,
+            episode_index=self._episode_index,
+            state=state,
+            action=action_np,
+            reward=reward_f,
+            done=episode_done,
+            next_state=obs,
+        ):
+            task_done = DONE_TERMINATED
+        elif episode_done != DONE_RUNNING and self._max_task_episodes > 0 and (
+            self._task_episode_count + 1 == self._max_task_episodes
         ):
             task_done = DONE_TRUNCATED
         else:
@@ -459,7 +544,7 @@ class _EnvInstance:
 
         output = self._make_output(
             step_index=self._step_index,
-            reward=self._reward_array(raw_reward),
+            reward=self._reward_array(reward_f),
             episode_done=episode_done,
             task_done=task_done,
             obs=obs,
@@ -518,9 +603,12 @@ class SingleEnv:
         task_index (int)            — task counter
         episode_index (int)         — episode counter within the current task (resets at task end)
         step_index (int64 array)    — step index within the episode (0-based; resets on episode restart)
-        reward (float32 array)      — raw env reward from the underlying Gymnasium step
-        task_done (int64 array)     — 0=running, 1=task terminated (reserved, unused),
-                                      2=task truncated (episodes_per_task reached)
+        reward (float32 array)      — env reward after ``reward_transform``
+                                      (also used on reset frames, where
+                                      ``step_index`` is 0; default ``0``)
+        task_done (int64 array)     — 0=running, 1=task terminated
+                                      (terminate_task returned true),
+                                      2=task truncated (max_task_episodes reached)
         episode_done (int64 array)  — 0=running, 1=terminated, 2=truncated (Gymnasium only)
         observation (array/dict)    — the observation emitted by the env
         info (dict)                 — Gymnasium info dict from the underlying env step/reset

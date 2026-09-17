@@ -21,8 +21,9 @@ class EnvConfig:
             position) still varies across episodes as the env's RNG continues.
             Envs that generate their problem instance (e.g. a procedural map)
             when ``reset`` receives an explicit seed present the same instance
-            to every episode in the task. With ``episodes_per_task=0`` the env
-            is seeded once, on the first reset. Not a public ``reset()`` on
+            to every episode in the task. With no task boundary
+            (``max_task_episodes=0`` and no ``terminate_task``) the env is
+            seeded once, on the first reset. Not a public ``reset()`` on
             mouse-gym envs.
         id: Gymnasium env ID (e.g. ``"CartPole-v1"``). Mutually exclusive with
             ``env_fn`` — provide exactly one of ``id`` or ``env_fn``.
@@ -32,32 +33,52 @@ class EnvConfig:
             set, otherwise to the factory callable's ``__name__`` (named functions
             and classes only — anonymous ``lambda`` factories require an explicit
             ``name``).
-        episodes_per_task: Number of episodes before the task is truncated
-            (``task_done=2``). Defaults to ``0`` (unlimited) — the task boundary
-            never fires automatically. ``task_done=1`` (task terminated) is
-            reserved and unused.
+        max_task_episodes: Number of episodes before the task is truncated
+            (``task_done=2``). Defaults to ``0`` (unlimited) — this timeout never
+            fires on its own. A task can still end earlier via
+            ``terminate_task``.
+        terminate_task: Optional callable that decides whether the task
+            terminates (``task_done=1``). Invoked on episode-end steps with
+            the same keyword arguments as ``reward_transform``
+            (``step_index``, ``episode_index``, ``state``, ``action``,
+            ``reward``, ``done``, ``next_state``). ``reward`` is the
+            post-``reward_transform`` value. A truthy return emits
+            ``task_done=1`` and wins over ``max_task_episodes``. Defaults
+            to ``None`` (no terminate condition).
         kwargs: Extra keyword arguments forwarded to ``gymnasium.make`` (``id`` configs only).
         episode_reset_options: Options forwarded to underlying ``env.reset(options=...)``
             inside ``step()`` (every reset frame).
         task_reset_options: Options overlaid on ``episode_reset_options`` when a
-            reset frame starts a new task (after ``task_done`` 2).
+            reset frame starts a new task (after ``task_done`` 1 or 2).
         render: Enable render mode (``"human"``) for ``id`` configs when not already in
             ``kwargs``.
-        reset_reward: Reward value on reset frames (``step_index=0``,
-            ``episode_done=0``, ``task_done=0`` outputs from ``step()``; default
-            ``0.0``).
+        reward_transform: Optional callable applied to each step reward
+            (including reset frames) before it is written to the step output
+            and accumulated into episode/task metrics. Called with
+            ``step_index``, ``episode_index``, ``state``, ``action``,
+            ``reward``, ``done``, and ``next_state``. ``done`` is the
+            episode-done code (``0``/``1``/``2``). ``state`` is the
+            observation before the step (``None`` on the first reset);
+            ``next_state`` is the observation after. ``action`` is the
+            step-input action array, or ``None`` on reset frames. A reset
+            frame is ``step_index == 0`` (``reward`` is ``0.0``, no
+            Gymnasium reward); a task-start reset is also
+            ``episode_index == 0``. Accept unused fields with
+            ``**kwargs``. With no transform, reset-frame reward is
+            ``0.0``. Defaults to ``None`` (identity on env steps).
     """
 
     seed: int
     id: str | None = None
-    episodes_per_task: int = 0
+    max_task_episodes: int = 0
+    terminate_task: Callable[..., bool] | None = None
     name: str | None = None
     kwargs: dict | None = None
     episode_reset_options: dict | None = None
     task_reset_options: dict | None = None
     render: bool = False
     env_fn: Callable[[], Any] | None = None
-    reset_reward: float = 0.0
+    reward_transform: Callable[..., float] | None = None
 
     def __post_init__(self) -> None:
         has_id = self.id is not None
@@ -78,8 +99,18 @@ class EnvConfig:
                 "EnvConfig render only applies to id configs; "
                 "set render_mode inside env_fn instead."
             )
-        if self.episodes_per_task < 0:
+        if self.max_task_episodes < 0:
             raise ValueError(
-                f"EnvConfig episodes_per_task must be >= 0 (0 = unlimited); "
-                f"got {self.episodes_per_task}."
+                f"EnvConfig max_task_episodes must be >= 0 (0 = unlimited); "
+                f"got {self.max_task_episodes}."
+            )
+        if self.reward_transform is not None and not callable(self.reward_transform):
+            raise ValueError(
+                "EnvConfig reward_transform must be a callable "
+                "that accepts the transition kwargs, or None."
+            )
+        if self.terminate_task is not None and not callable(self.terminate_task):
+            raise ValueError(
+                "EnvConfig terminate_task must be a callable "
+                "that accepts the transition kwargs, or None."
             )
