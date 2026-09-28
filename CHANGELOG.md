@@ -7,12 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- ``scripts/worker.sh``: start a Cursor My Machines self-hosted worker
-  in tmux (``mouse-worker``) that registers sibling
-  ``mouse-core`` / ``mouse-experiment`` / ``mouse-gym`` checkouts.
-  Default name ``mouse``; optional name override. Same script lives in
-  each Mouse repo.
+### Removed
+- ``scripts/worker.sh``. The Cursor My Machines worker script lives
+  only in ``mouse-experiment`` (``scripts/worker.sh`` there still
+  registers sibling ``mouse-core`` / ``mouse-experiment`` /
+  ``mouse-gym`` checkouts).
 
 ## [1.1.0] - 2026-09-17
 

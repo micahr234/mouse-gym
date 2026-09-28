@@ -22,22 +22,6 @@ This installs the package in editable mode with the `dev` and `all` extras (`all
 
 If you edit notebooks with a different tool (browser Jupyter, `nbconvert`, scripts), clear outputs before committing, e.g. `jupyter nbconvert --clear-output --inplace examples/*.ipynb`.
 
-### Self-hosted Cursor worker
-
-On the home server, start a My Machines worker that registers the
-Mouse sibling checkouts (`mouse-core`, `mouse-experiment`, `mouse-gym`):
-
-```bash
-# Clone the three repos as siblings, then from any of them:
-scripts/worker.sh            # name: mouse
-scripts/worker.sh <name>     # override the worker name
-```
-
-Requires `tmux`, the Cursor `agent` CLI (`curl https://cursor.com/install -fsS | bash`),
-and `agent login` once. The worker runs in tmux session `mouse-worker`
-(attach with `tmux attach -t mouse-worker`; Ctrl-C stops it). Outbound
-HTTPS only. Shared assignment is the My Machines default (no `--pool`).
-
 ## Pull request workflow
 
 1. Fork the repository and create a branch from `main`.
