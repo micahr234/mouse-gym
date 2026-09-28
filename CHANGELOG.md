@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- ``scripts/worker.sh``: start a Cursor My Machines self-hosted worker
+  in tmux (``mouse-worker``) that registers sibling
+  ``mouse-core`` / ``mouse-experiment`` / ``mouse-gym`` checkouts.
+  Default name ``mouse``; optional name override. Same script lives in
+  each Mouse repo.
+
 ## [1.1.0] - 2026-09-17
 
 Reward and task boundaries are now callables: shape each step with `reward_transform`, end a task with `terminate_task` (`task_done=1`), or time out after `max_task_episodes` (`task_done=2`).
