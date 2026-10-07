@@ -8,38 +8,28 @@ import gymnasium as gym
 import numpy as np
 import pytest
 
-from mouse_gym import EnvConfig, FieldSpec, InputSpec, Metrics, OutputSpec, make_env, make_group_env
-from mouse_gym.format import (
-    DONE_RUNNING,
-    DONE_TERMINATED,
-    DONE_TRUNCATED,
-)
+from mouse_gym import EnvConfig, Metrics, make_env, make_group_env
 
 
 def _rollout(env, steps: int = 5) -> list:
-    """Roll out a GroupEnv for ``steps`` steps; returns the final list[dict]."""
-    outputs = env.step(env.sample_random_input())
+    """Roll out a GroupEnv for ``steps`` steps; returns the final list of tuples."""
+    outputs = env.step(env.action_space.sample())
     for _ in range(steps - 1):
-        outputs = env.step(env.sample_random_input())
+        outputs = env.step(env.action_space.sample())
     return outputs
 
 
-def _rollout_single(env, steps: int = 5) -> dict:
-    """Roll out a SingleEnv for ``steps`` steps; returns the final output dict."""
-    output = env.step(env.sample_random_input())
+def _rollout_single(env, steps: int = 5) -> tuple:
+    """Roll out a SingleEnv for ``steps`` steps; returns the final tuple."""
+    output = env.step(env.action_space.sample())
     for _ in range(steps - 1):
-        output = env.step(env.sample_random_input())
+        output = env.step(env.action_space.sample())
     return output
 
 
 def test_cartpole_step_contract() -> None:
     cfgs = [
-        EnvConfig(
-            id="CartPole-v1",
-            name=f"train-cartpole_{i}",
-            seed=i,
-            max_task_episodes=5,
-        )
+        EnvConfig(id="CartPole-v1", name=f"train-cartpole_{i}", seed=i)
         for i in range(3)
     ]
     env = make_group_env(cfgs)
@@ -48,23 +38,12 @@ def test_cartpole_step_contract() -> None:
         assert len(outputs) == 3
         assert env.names[0] == "train-cartpole_0"
         assert env.names == ("train-cartpole_0", "train-cartpole_1", "train-cartpole_2")
-        sampled = env.sample_random_input()
-        assert "action" in sampled[0]
-        assert sampled[0]["action"].ndim == 0
-        for r in outputs:
-            assert list(r.keys()) == [
-                "task_index",
-                "episode_index",
-                "step_index",
-                "reward",
-                "task_done",
-                "episode_done",
-                "observation",
-                "info",
-            ]
-            assert "id" not in r
-            assert "name" not in r
-            assert "action" not in r
+        for observation, reward, terminated, truncated, info in outputs:
+            assert observation.shape == (4,)
+            assert isinstance(reward, float)
+            assert isinstance(terminated, bool)
+            assert isinstance(truncated, bool)
+            assert isinstance(info, dict)
         for per_env in env.metrics.episode_cum_rewards:
             assert all(isinstance(v, float) for v in per_env)
     finally:
@@ -74,8 +53,8 @@ def test_cartpole_step_contract() -> None:
 def test_group_env_exposes_gym_tuple_spaces() -> None:
     env = make_group_env(
         [
-            EnvConfig(id="CartPole-v1", seed=0, max_task_episodes=5),
-            EnvConfig(id="CartPole-v1", seed=1, max_task_episodes=5),
+            EnvConfig(id="CartPole-v1", seed=0),
+            EnvConfig(id="CartPole-v1", seed=1),
         ]
     )
     try:
@@ -90,99 +69,44 @@ def test_group_env_exposes_gym_tuple_spaces() -> None:
         env.close()
 
 
-def test_output_spec_and_input_spec_cartpole() -> None:
-    cfg = EnvConfig(
-        id="CartPole-v1",
-        seed=0,
-        max_task_episodes=5,
-    )
-    env = make_env(cfg)
-    try:
-        ospec = env.output_spec
-        ispec = env.input_spec
-
-        assert isinstance(ospec, OutputSpec)
-        assert isinstance(ispec, InputSpec)
-
-        assert isinstance(ospec.observation, FieldSpec)
-        assert ospec.observation.dtype == np.dtype(np.float32)
-        assert ospec.observation.shape == (4,)
-
-        assert ospec.step_index.dtype == np.dtype(np.int64)
-        assert ospec.step_index.shape == ()
-        assert ospec.reward.dtype == np.dtype(np.float32)
-        assert ospec.episode_done.dtype == np.dtype(np.int64)
-        assert ospec.episode_done.shape == ()
-        assert ospec.task_done.dtype == np.dtype(np.int64)
-        assert ospec.task_done.shape == ()
-        assert not hasattr(ospec, "done")
-        assert ospec.episode_index.dtype == int
-        assert ospec.task_index.dtype == int
-        assert not hasattr(ospec, "q_star")
-        assert not hasattr(ospec, "ns_params")
-        assert not hasattr(ospec, "time")
-
-        assert isinstance(ispec.action, FieldSpec)
-        assert ispec.action.dtype == np.dtype(np.int64)
-        assert ispec.action.shape == ()
-    finally:
-        env.close()
-
-
 def test_pendulum_continuous_step_contract() -> None:
     env = make_group_env(
         [
-            EnvConfig(id="Pendulum-v1", seed=0, max_task_episodes=5),
-            EnvConfig(id="Pendulum-v1", seed=1, max_task_episodes=5),
+            EnvConfig(id="Pendulum-v1", seed=0),
+            EnvConfig(id="Pendulum-v1", seed=1),
         ]
     )
     try:
-        assert env.input_specs[0].action.shape == (1,)
-        sampled = env.sample_random_input()
-        action = sampled[0]
-        assert "action" in action
-        assert action["action"].dtype == np.float32
-        # Sampled inputs match the input spec shape.
-        assert action["action"].shape == (1,)
-
-        assert env.input_specs[0].action.dtype == np.dtype(np.float32)
-        obs_spec = env.output_specs[0].observation
-        assert isinstance(obs_spec, FieldSpec)
-        assert obs_spec.dtype == np.dtype(np.float32)
+        assert env.action_space.spaces[0].shape == (1,)
+        action = env.action_space.sample()[0]
+        assert action.dtype == np.float32
+        assert action.shape == (1,)
 
         outputs = _rollout(env)
         assert len(outputs) == 2
-        for r in outputs:
-            assert "observation" in r
-            assert "action" not in r
+        for observation, reward, _terminated, _truncated, _info in outputs:
+            assert observation.shape == (3,)
+            assert isinstance(reward, float)
     finally:
         env.close()
 
 
-def test_action_input_contract_is_enforced() -> None:
-    cfg = EnvConfig(
-        id="CartPole-v1",
-        seed=0,
-        max_task_episodes=5,
+def test_group_env_rejects_wrong_action_count() -> None:
+    env = make_group_env(
+        [EnvConfig(id="CartPole-v1", seed=0), EnvConfig(id="CartPole-v1", seed=1)]
     )
-    env = make_env(cfg)
     try:
-        env.step(env.sample_random_input())
-        with pytest.raises(ValueError, match="must be a dict"):
-            env.step(cast(Any, [np.array(0)]))
-        with pytest.raises(ValueError, match="action"):
-            env.step({"wrong": np.array(0)})
+        env.step(env.action_space.sample())
+        with pytest.raises(ValueError, match="list or tuple"):
+            env.step(cast(Any, 0))
+        with pytest.raises(ValueError, match="exactly 2"):
+            env.step([0])
     finally:
         env.close()
 
 
 def test_single_env_reset_is_not_implemented() -> None:
-    cfg = EnvConfig(
-        id="CartPole-v1",
-        seed=0,
-        max_task_episodes=5,
-    )
-    env = make_env(cfg)
+    env = make_env(EnvConfig(id="CartPole-v1", seed=0))
     try:
         with pytest.raises(NotImplementedError, match="does not support public reset"):
             env.reset()
@@ -214,25 +138,13 @@ def test_dict_obs_dtype_follows_space_not_key_name() -> None:
                 {},
             )
 
-    cfg = EnvConfig(
-        seed=0,
-        max_task_episodes=5,
-        env_fn=DictObsEnv,
-    )
-    env = make_env(cfg)
+    env = make_env(EnvConfig(seed=0, env_fn=DictObsEnv))
     try:
-        output = _rollout_single(env, steps=2)
-        assert "pos" not in output
-        assert "tile" not in output
-        obs = output["observation"]
-        assert isinstance(obs, dict)
-        assert obs["pos"].dtype == np.float32
-        assert obs["tile"].dtype == np.int32
-
-        ospec = env.output_spec
-        assert isinstance(ospec.observation, dict)
-        assert ospec.observation["pos"].dtype == np.dtype(np.float32)
-        assert ospec.observation["tile"].dtype == np.dtype(np.int32)
+        observation, _reward, _terminated, _truncated, _info = _rollout_single(env, steps=2)
+        assert isinstance(observation, dict)
+        assert "episode_done" not in observation
+        assert observation["pos"].dtype == np.float32
+        assert observation["tile"].dtype == np.int32
     finally:
         env.close()
 
@@ -249,63 +161,24 @@ def test_info_keys_passthrough() -> None:
         def step(self, action):
             return 1, 0.0, False, False, {"foo": 2, "q_star": np.array([0.0, 1.0], dtype=np.float64)}
 
-    cfg = EnvConfig(
-        seed=0,
-        max_task_episodes=5,
-        env_fn=InfoEmittingEnv,
-    )
-    env = make_env(cfg)
+    env = make_env(EnvConfig(seed=0, env_fn=InfoEmittingEnv))
     try:
-        reset_frame = env.step(env.sample_random_input())
-        step_frame = env.step(env.sample_random_input())
-        assert reset_frame["info"]["foo"] == 1
-        assert step_frame["info"]["foo"] == 2
-        assert np.asarray(reset_frame["info"]["q_star"]).tolist() == [1.0, 0.0]
-        assert np.asarray(step_frame["info"]["q_star"]).tolist() == [0.0, 1.0]
-        expected_keys = [
-            "task_index",
-            "episode_index",
-            "step_index",
-            "reward",
-            "task_done",
-            "episode_done",
-            "observation",
-            "info",
-        ]
-        assert list(reset_frame.keys()) == expected_keys
-        assert list(step_frame.keys()) == expected_keys
+        _obs, _reward, _terminated, _truncated, reset_info = env.step(env.action_space.sample())
+        _obs, _reward, _terminated, _truncated, step_info = env.step(env.action_space.sample())
+        assert reset_info["foo"] == 1
+        assert step_info["foo"] == 2
+        assert np.asarray(reset_info["q_star"]).tolist() == [1.0, 0.0]
+        assert np.asarray(step_info["q_star"]).tolist() == [0.0, 1.0]
     finally:
         env.close()
 
 
-def test_action_space_can_be_seeded_for_random_inputs() -> None:
-    def _sampled_actions(*, seed: int, action_space_seed: int) -> list[int]:
-        cfg = EnvConfig(
-            id="CartPole-v1",
-            seed=seed,
-            max_task_episodes=5,
-        )
-        env = make_env(cfg)
-        try:
-            env.action_space.seed(action_space_seed)
-            return [int(env.sample_random_input()["action"].item()) for _ in range(12)]
-        finally:
-            env.close()
-
-    assert _sampled_actions(seed=10, action_space_seed=20) == _sampled_actions(
-        seed=11, action_space_seed=20
-    )
-    assert _sampled_actions(seed=10, action_space_seed=20) != _sampled_actions(
-        seed=10, action_space_seed=21
-    )
-
-
-def test_seed_controls_internal_reset_stream() -> None:
+def test_same_seed_repeats_first_observation() -> None:
     def _first_obs(*, seed: int) -> np.ndarray:
-        cfg = EnvConfig(id="CartPole-v1", seed=seed, max_task_episodes=5)
-        env = make_env(cfg)
+        env = make_env(EnvConfig(id="CartPole-v1", seed=seed))
         try:
-            return env.step(env.sample_random_input())["observation"]
+            observation, *_rest = env.step(env.action_space.sample())
+            return observation
         finally:
             env.close()
 
@@ -314,12 +187,7 @@ def test_seed_controls_internal_reset_stream() -> None:
 
 
 class _ProceduralEnv(gym.Env):
-    """Regenerates its 'map' only when ``reset`` receives an explicit seed.
-
-    Idiomatic Gymnasium: an explicit seed reseeds ``np_random`` and marks a
-    new problem instance; seedless resets keep the instance and draw a fresh
-    start position from the continuing RNG stream.
-    """
+    """Records every ``reset`` seed and redraws its map from that seed."""
 
     observation_space = gym.spaces.Box(0.0, 1.0, shape=(1,), dtype=np.float32)
     action_space = gym.spaces.Discrete(2)
@@ -333,7 +201,7 @@ class _ProceduralEnv(gym.Env):
         super().reset(seed=seed)
         self.received_seeds.append(seed)
         self.received_options.append(options)
-        if seed is not None:
+        if self.map is None or seed is not None:
             self.map = self.np_random.integers(0, 10, size=4)
         assert self.map is not None
         start = np.array([self.np_random.random()], dtype=np.float32)
@@ -343,77 +211,83 @@ class _ProceduralEnv(gym.Env):
         return np.zeros(1, np.float32), 0.0, True, False, {}
 
 
-def _reset_frames(env, *, steps: int) -> list[dict]:
+def _reset_frames(env, *, steps: int) -> list[tuple]:
     frames = []
     for _ in range(steps):
-        output = env.step(env.sample_random_input())
-        if output["step_index"].item() == 0:
+        output = env.step(env.action_space.sample())
+        if env.step_index == 0:
             frames.append(output)
     return frames
 
 
-def test_task_is_a_seeded_session() -> None:
-    """One seed per task: instance state persists within a task, changes across tasks."""
-    cfg = EnvConfig(
-        env_fn=_ProceduralEnv,
-        seed=7,
-        max_task_episodes=3,
-    )
-    env = make_env(cfg)
+def test_seed_is_forwarded_on_every_reset() -> None:
+    env = make_env(EnvConfig(env_fn=_ProceduralEnv, seed=7, reset_options={"mode": "keep"}))
     try:
-        maps_by_task: dict[int, list[np.ndarray]] = {}
-        starts_by_task: dict[int, list[float]] = {}
-        for frame in _reset_frames(env, steps=40):
-            task = int(frame["task_index"])
-            maps_by_task.setdefault(task, []).append(frame["info"]["map"])
-            starts_by_task.setdefault(task, []).append(float(frame["observation"][0]))
-        assert len(maps_by_task) >= 2
-
-        # The problem instance is constant within a task and differs across tasks.
-        for maps in maps_by_task.values():
-            for m in maps[1:]:
-                np.testing.assert_array_equal(m, maps[0])
-        assert not np.array_equal(maps_by_task[0][0], maps_by_task[1][0])
-
-        # Episode-level randomness still varies within a task.
-        assert len(set(starts_by_task[0])) > 1
-    finally:
-        env.close()
-
-
-def test_env_seeded_only_at_task_starts() -> None:
-    cfg = EnvConfig(
-        env_fn=_ProceduralEnv,
-        seed=0,
-        max_task_episodes=2,
-    )
-    env = make_env(cfg)
-    try:
-        _reset_frames(env, steps=12)
+        frames = _reset_frames(env, steps=8)
         inner = cast(_ProceduralEnv, env._env_instance._env.unwrapped)
-        assert len(inner.received_seeds) >= 4
-        # Resets alternate: task start (explicit seed), then episode reset (no seed).
-        for i, received in enumerate(inner.received_seeds):
-            if i % 2 == 0:
-                assert isinstance(received, int)
-            else:
-                assert received is None
-        # No reset options configured -> none injected.
-        assert all(options is None for options in inner.received_options)
+        assert len(inner.received_seeds) >= 3
+        assert inner.received_seeds == [7] * len(inner.received_seeds)
+        assert all(options == {"mode": "keep"} for options in inner.received_options)
+
+        maps = [info["map"] for _obs, _reward, _terminated, _truncated, info in frames]
+        for later in maps[1:]:
+            np.testing.assert_array_equal(later, maps[0])
+        starts = [float(observation[0]) for observation, *_rest in frames]
+        assert len(set(starts)) == 1
     finally:
         env.close()
 
 
-def test_seed_stream_is_deterministic_per_task() -> None:
-    def _first_map(*, seed: int) -> np.ndarray:
-        cfg = EnvConfig(
-            env_fn=_ProceduralEnv,
-            seed=seed,
-            max_task_episodes=3,
-        )
-        env = make_env(cfg)
+def _received_seeds(env) -> list[int | None]:
+    frames = _reset_frames(env, steps=8)
+    assert len(frames) >= 3
+    inner = cast(_ProceduralEnv, env._env_instance._env.unwrapped)
+    return list(inner.received_seeds)
+
+
+def test_stream_draws_reset_seeds_from_the_initializer() -> None:
+    def _seeds(seed: int) -> list[int | None]:
+        env = make_env(EnvConfig(env_fn=_ProceduralEnv, seed=seed, seed_mode="stream"))
         try:
-            return env.step(env.sample_random_input())["info"]["map"]
+            return _received_seeds(env)
+        finally:
+            env.close()
+
+    same_a = _seeds(7)
+    same_b = _seeds(7)
+    other = _seeds(8)
+    assert same_a == same_b
+    assert same_a != other
+    assert len(set(same_a)) == len(same_a)
+    assert all(isinstance(seed, int) and seed >= 0 for seed in same_a)
+
+
+def test_none_seed_mode_passes_none() -> None:
+    env = make_env(EnvConfig(env_fn=_ProceduralEnv, seed_mode="none"))
+    try:
+        seeds = _received_seeds(env)
+        assert seeds == [None] * len(seeds)
+    finally:
+        env.close()
+
+
+def test_seed_mode_rejects_mismatched_seed() -> None:
+    with pytest.raises(ValueError, match="must be an int"):
+        EnvConfig(id="CartPole-v1", seed_mode="constant")
+    with pytest.raises(ValueError, match="must be an int"):
+        EnvConfig(id="CartPole-v1", seed_mode="stream")
+    with pytest.raises(ValueError, match="must be None"):
+        EnvConfig(id="CartPole-v1", seed=1, seed_mode="none")
+    with pytest.raises(ValueError, match="seed_mode"):
+        EnvConfig(id="CartPole-v1", seed=1, seed_mode=cast(Any, "fixed"))
+
+
+def test_first_reset_map_is_deterministic() -> None:
+    def _first_map(*, seed: int) -> np.ndarray:
+        env = make_env(EnvConfig(env_fn=_ProceduralEnv, seed=seed))
+        try:
+            _obs, _reward, _terminated, _truncated, info = env.step(env.action_space.sample())
+            return info["map"]
         finally:
             env.close()
 
@@ -422,18 +296,15 @@ def test_seed_stream_is_deterministic_per_task() -> None:
 
 
 def test_autoreset_frame_reward_defaults_to_zero() -> None:
-    cfg = EnvConfig(
-        id="CartPole-v1",
-        seed=0,
-        max_task_episodes=5,
+    env = make_env(
+        EnvConfig(id="CartPole-v1", seed=0, kwargs={"max_episode_steps": 8})
     )
-    env = make_env(cfg)
     try:
-        output, _step = _roll_until_autoreset(env)
-        assert output["step_index"].item() == 0
-        assert output["reward"].item() == 0.0
-        assert output["episode_done"].item() == 0
-        assert output["task_done"].item() == 0
+        (_obs, reward, terminated, truncated, _info), _step = _roll_until_autoreset(env)
+        assert env.step_index == 0
+        assert reward == 0.0
+        assert terminated is False
+        assert truncated is False
         assert len(env.metrics.episode_cum_rewards) >= 1
     finally:
         env.close()
@@ -443,32 +314,24 @@ def test_initial_reset_frame_reward_from_transform() -> None:
     def transform(*, step_index: int, reward: float, **_kwargs: object) -> float:
         return -1.0 if step_index == 0 else reward
 
-    cfg = EnvConfig(
-        id="CartPole-v1",
-        seed=0,
-        max_task_episodes=5,
-        reward_transform=transform,
-    )
-    env = make_env(cfg)
+    env = make_env(EnvConfig(id="CartPole-v1", seed=0, reward_transform=transform))
     try:
-        output = env.step(env.sample_random_input())
-        assert output["step_index"].item() == 0
-        assert "action" not in output
-        assert output["reward"].item() == -1.0
-        assert output["episode_done"].item() == 0
-        assert output["task_done"].item() == 0
-        assert output["task_index"] == 0
+        _obs, reward, terminated, truncated, _info = env.step(env.action_space.sample())
+        assert env.step_index == 0
+        assert reward == -1.0
+        assert terminated is False
+        assert truncated is False
         assert env.metrics.episode_cum_rewards == []
     finally:
         env.close()
 
 
-def _roll_until_autoreset(env, *, max_steps: int = 500) -> tuple[dict, int]:
-    output = env.step(env.sample_random_input())
+def _roll_until_autoreset(env, *, max_steps: int = 500) -> tuple[tuple, int]:
+    env.step(env.action_space.sample())
     for step in range(1, max_steps):
-        prev_step_index = output["step_index"].item()
-        output = env.step(env.sample_random_input())
-        if output["step_index"].item() == 0 and prev_step_index > 0:
+        prev_step_index = env.step_index
+        output = env.step(env.action_space.sample())
+        if env.step_index == 0 and prev_step_index > 0:
             return output, step
     raise AssertionError(f"no autoreset frame within {max_steps} steps")
 
@@ -481,12 +344,7 @@ def test_reset_frame_contract() -> None:
         )
 
     cfgs = [
-        EnvConfig(
-            name=f"CartPole-custom_{i}",
-            seed=i,
-            max_task_episodes=5,
-            env_fn=make_cartpole,
-        )
+        EnvConfig(name=f"CartPole-custom_{i}", seed=i, env_fn=make_cartpole)
         for i in range(2)
     ]
     env = make_group_env(cfgs)
@@ -494,8 +352,8 @@ def test_reset_frame_contract() -> None:
         outputs = _rollout(env, steps=2)
         assert len(outputs) == 2
         assert env.names == ("CartPole-custom_0", "CartPole-custom_1")
-        obs = outputs[0]["observation"]
-        assert np.all(obs == 0.0)
+        observation = outputs[0][0]
+        assert np.all(observation == 0.0)
     finally:
         env.close()
 
@@ -512,25 +370,16 @@ def test_box_observation_preserves_native_uint8_dtype() -> None:
         def step(self, action):
             return np.full((2, 3), 9, dtype=np.uint8), 1.0, False, False, {}
 
-    cfg = EnvConfig(
-        seed=0,
-        max_task_episodes=5,
-        env_fn=Uint8ImageEnv,
-    )
-    env = make_env(cfg)
+    env = make_env(EnvConfig(seed=0, env_fn=Uint8ImageEnv))
     try:
-        output = _rollout_single(env, steps=2)
-        assert "observation" in output
-        assert output["observation"].dtype == np.uint8
-        obs_spec = env.output_spec.observation
-        assert isinstance(obs_spec, FieldSpec)
-        assert obs_spec.dtype == np.dtype(np.uint8)
-        assert obs_spec.shape == (2, 3)
+        observation, _reward, _terminated, _truncated, _info = _rollout_single(env, steps=2)
+        assert observation.dtype == np.uint8
+        assert observation.shape == (2, 3)
     finally:
         env.close()
 
 
-def test_box_action_preserves_native_float64_dtype() -> None:
+def test_box_action_is_forwarded_unchanged() -> None:
     class Float64ActionEnv(gym.Env):
         observation_space = gym.spaces.Box(-1.0, 1.0, shape=(1,), dtype=np.float32)
         action_space = gym.spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float64)
@@ -546,23 +395,16 @@ def test_box_action_preserves_native_float64_dtype() -> None:
             self.last_action = action
             return np.zeros(1, dtype=np.float32), 0.0, False, False, {}
 
-    cfg = EnvConfig(
-        seed=0,
-        max_task_episodes=5,
-        env_fn=Float64ActionEnv,
-    )
-    env = make_env(cfg)
+    env = make_env(EnvConfig(seed=0, env_fn=Float64ActionEnv))
     try:
-        input = env.sample_random_input()
-        assert input["action"].dtype == np.float64
-        assert env.input_spec.action.dtype == np.dtype(np.float64)
+        sampled = env.action_space.sample()
+        assert sampled.dtype == np.float64
 
-        env.step(input)
-        input = {"action": np.array([0.25, -0.25], dtype=np.float64)}
-        env.step(input)
+        env.step(sampled)
+        action = np.array([0.25, -0.25], dtype=np.float64)
+        env.step(action)
         inner_env = cast(Float64ActionEnv, env._env_instance._env.unwrapped)
-        assert inner_env.last_action is not None
-        assert inner_env.last_action.dtype == np.float64
+        assert inner_env.last_action is action
     finally:
         env.close()
 
@@ -579,7 +421,7 @@ class ImmediateTerminateEnv(gym.Env):
         return 0, 1.0, True, False, {}
 
 
-class ImmediateTruncateEnv(gym.Env):
+class BothFlagsEnv(gym.Env):
     observation_space = gym.spaces.Discrete(1)
     action_space = gym.spaces.Discrete(2)
 
@@ -588,249 +430,37 @@ class ImmediateTruncateEnv(gym.Env):
         return 0, {}
 
     def step(self, action):
-        return 0, 1.0, False, True, {}
+        return 0, 1.0, True, True, {}
 
 
-def _terminate_on_done(*, done: int, **_kwargs: object) -> bool:
-    return done != 0
-
-
-def _terminate_on_episode_terminate(*, done: int, **_kwargs: object) -> bool:
-    return done == DONE_TERMINATED
-
-
-def _terminate_on_episode_timeout(*, done: int, **_kwargs: object) -> bool:
-    return done == DONE_TRUNCATED
-
-
-def _collect_episode_task_dones(
-    env_fn: type[gym.Env],
-    *,
-    max_task_episodes: int = 0,
-    terminate_task: Any = None,
-    steps: int = 20,
-) -> tuple[list[int], list[int]]:
-    cfg = EnvConfig(
-        seed=0,
-        max_task_episodes=max_task_episodes,
-        terminate_task=terminate_task,
-        env_fn=env_fn,
-    )
-    env = make_env(cfg)
+def test_gym_flags_pass_through_together() -> None:
+    env = make_env(EnvConfig(seed=0, env_fn=BothFlagsEnv))
     try:
-        episode_dones: list[int] = []
-        task_dones: list[int] = []
-        for _ in range(steps):
-            output = env.step(env.sample_random_input())
-            episode_done = int(output["episode_done"].item())
-            task_done = int(output["task_done"].item())
-            if episode_done != 0:
-                episode_dones.append(episode_done)
-                task_dones.append(task_done)
-        return episode_dones, task_dones
-    finally:
-        env.close()
-
-
-def test_task_done_codes_fire_at_task_boundary() -> None:
-    term_episode, term_task = _collect_episode_task_dones(
-        ImmediateTerminateEnv, max_task_episodes=2
-    )
-    assert term_episode[:4] == [
-        DONE_TERMINATED,
-        DONE_TERMINATED,
-        DONE_TERMINATED,
-        DONE_TERMINATED,
-    ]
-    assert term_task[:4] == [
-        0,
-        DONE_TRUNCATED,
-        0,
-        DONE_TRUNCATED,
-    ]
-    assert DONE_TERMINATED not in term_task
-
-    trunc_episode, trunc_task = _collect_episode_task_dones(
-        ImmediateTruncateEnv, max_task_episodes=2
-    )
-    assert trunc_episode[:4] == [
-        DONE_TRUNCATED,
-        DONE_TRUNCATED,
-        DONE_TRUNCATED,
-        DONE_TRUNCATED,
-    ]
-    assert trunc_task[:4] == [
-        0,
-        DONE_TRUNCATED,
-        0,
-        DONE_TRUNCATED,
-    ]
-    assert DONE_TERMINATED not in trunc_task
-
-
-def test_terminate_task_on_episode_terminate_or_timeout() -> None:
-    term_episode, term_task = _collect_episode_task_dones(
-        ImmediateTerminateEnv,
-        terminate_task=_terminate_on_done,
-    )
-    assert term_episode[:3] == [DONE_TERMINATED, DONE_TERMINATED, DONE_TERMINATED]
-    assert term_task[:3] == [DONE_TERMINATED, DONE_TERMINATED, DONE_TERMINATED]
-
-    trunc_episode, trunc_task = _collect_episode_task_dones(
-        ImmediateTruncateEnv,
-        terminate_task=_terminate_on_done,
-    )
-    assert trunc_episode[:3] == [DONE_TRUNCATED, DONE_TRUNCATED, DONE_TRUNCATED]
-    assert trunc_task[:3] == [DONE_TERMINATED, DONE_TERMINATED, DONE_TERMINATED]
-
-
-def test_terminate_task_on_episode_terminate_only() -> None:
-    term_episode, term_task = _collect_episode_task_dones(
-        ImmediateTerminateEnv,
-        max_task_episodes=2,
-        terminate_task=_terminate_on_episode_terminate,
-    )
-    assert term_episode[:2] == [DONE_TERMINATED, DONE_TERMINATED]
-    assert term_task[:2] == [DONE_TERMINATED, DONE_TERMINATED]
-
-    trunc_episode, trunc_task = _collect_episode_task_dones(
-        ImmediateTruncateEnv,
-        max_task_episodes=2,
-        terminate_task=_terminate_on_episode_terminate,
-    )
-    assert trunc_episode[:4] == [
-        DONE_TRUNCATED,
-        DONE_TRUNCATED,
-        DONE_TRUNCATED,
-        DONE_TRUNCATED,
-    ]
-    assert trunc_task[:4] == [
-        0,
-        DONE_TRUNCATED,
-        0,
-        DONE_TRUNCATED,
-    ]
-
-
-def test_terminate_task_on_episode_timeout_only() -> None:
-    trunc_episode, trunc_task = _collect_episode_task_dones(
-        ImmediateTruncateEnv,
-        max_task_episodes=2,
-        terminate_task=_terminate_on_episode_timeout,
-    )
-    assert trunc_episode[:2] == [DONE_TRUNCATED, DONE_TRUNCATED]
-    assert trunc_task[:2] == [DONE_TERMINATED, DONE_TERMINATED]
-
-    term_episode, term_task = _collect_episode_task_dones(
-        ImmediateTerminateEnv,
-        max_task_episodes=2,
-        terminate_task=_terminate_on_episode_timeout,
-    )
-    assert term_episode[:4] == [
-        DONE_TERMINATED,
-        DONE_TERMINATED,
-        DONE_TERMINATED,
-        DONE_TERMINATED,
-    ]
-    assert term_task[:4] == [
-        0,
-        DONE_TRUNCATED,
-        0,
-        DONE_TRUNCATED,
-    ]
-
-
-def test_terminate_task_receives_transition_kwargs() -> None:
-    seen: list[dict[str, Any]] = []
-
-    def terminate(**kwargs: Any) -> bool:
-        seen.append(dict(kwargs))
-        return True
-
-    cfg = EnvConfig(
-        seed=0,
-        env_fn=ImmediateTerminateEnv,
-        terminate_task=terminate,
-    )
-    env = make_env(cfg)
-    try:
-        env.step(env.sample_random_input())
-        inp = env.sample_random_input()
-        env.step(inp)
-    finally:
-        env.close()
-
-    assert len(seen) == 1
-    assert set(seen[0]) == {
-        "step_index",
-        "episode_index",
-        "state",
-        "action",
-        "reward",
-        "done",
-        "next_state",
-    }
-    assert seen[0]["step_index"] == 1
-    assert seen[0]["episode_index"] == 0
-    assert seen[0]["state"] == 0
-    assert seen[0]["next_state"] == 0
-    assert seen[0]["reward"] == 1.0
-    assert seen[0]["done"] == DONE_TERMINATED
-    np.testing.assert_array_equal(seen[0]["action"], inp["action"])
-
-
-def test_task_terminate_wins_over_max_task_episodes_timeout() -> None:
-    _, task_dones = _collect_episode_task_dones(
-        ImmediateTerminateEnv,
-        max_task_episodes=1,
-        terminate_task=_terminate_on_episode_terminate,
-    )
-    assert task_dones[:3] == [DONE_TERMINATED, DONE_TERMINATED, DONE_TERMINATED]
-
-
-def test_task_terminate_starts_next_task() -> None:
-    cfg = EnvConfig(
-        seed=0,
-        env_fn=ImmediateTerminateEnv,
-        terminate_task=_terminate_on_episode_terminate,
-    )
-    env = make_env(cfg)
-    try:
-        first = env.step(env.sample_random_input())
-        assert int(first["task_index"]) == 0
-        assert int(first["step_index"].item()) == 0
-
-        terminal = env.step(env.sample_random_input())
-        assert int(terminal["episode_done"].item()) == DONE_TERMINATED
-        assert int(terminal["task_done"].item()) == DONE_TERMINATED
-        assert int(terminal["task_index"]) == 0
-        assert int(terminal["episode_index"]) == 0
-
-        reset = env.step(env.sample_random_input())
-        assert int(reset["task_index"]) == 1
-        assert int(reset["episode_index"]) == 0
-        assert int(reset["step_index"].item()) == 0
-        assert int(reset["episode_done"].item()) == 0
-        assert int(reset["task_done"].item()) == 0
+        env.step(env.action_space.sample())
+        _obs, _reward, terminated, truncated, _info = env.step(env.action_space.sample())
+        assert terminated is True
+        assert truncated is True
+        assert env.metrics.episode_cum_rewards == [1.0]
+        assert env.metrics.episode_lengths == [1.0]
     finally:
         env.close()
 
 
 def test_reward_transform_applies_before_metrics() -> None:
-    cfg = EnvConfig(
-        seed=0,
-        env_fn=ImmediateTerminateEnv,
-        terminate_task=_terminate_on_episode_terminate,
-        reward_transform=lambda reward, **_kwargs: reward * 10.0,
+    env = make_env(
+        EnvConfig(
+            seed=0,
+            env_fn=ImmediateTerminateEnv,
+            reward_transform=lambda reward, **_kwargs: reward * 10.0,
+        )
     )
-    env = make_env(cfg)
     try:
-        reset = env.step(env.sample_random_input())
-        assert reset["reward"].item() == 0.0
-        terminal = env.step(env.sample_random_input())
-        assert terminal["reward"].item() == 10.0
+        _obs, reward, _terminated, _truncated, _info = env.step(env.action_space.sample())
+        assert reward == 0.0
+        _obs, reward, _terminated, _truncated, _info = env.step(env.action_space.sample())
+        assert reward == 10.0
         assert env.metrics.episode_cum_rewards == [10.0]
-        assert env.metrics.task_cum_rewards == [10.0]
+        assert not hasattr(env.metrics, "task_cum_rewards")
     finally:
         env.close()
 
@@ -855,65 +485,58 @@ def test_reward_transform_receives_transition_kwargs() -> None:
         seen.append(dict(kwargs))
         return float(kwargs["reward"])
 
-    cfg = EnvConfig(seed=0, env_fn=TwoStepEnv, reward_transform=transform)
-    env = make_env(cfg)
+    env = make_env(EnvConfig(seed=0, env_fn=TwoStepEnv, reward_transform=transform))
     try:
-        env.step(env.sample_random_input())
-        first_in = env.sample_random_input()
-        env.step(first_in)
-        second_in = env.sample_random_input()
-        env.step(second_in)
+        env.step(0)
+        env.step(1)
+        env.step(0)
     finally:
         env.close()
 
     assert len(seen) == 3
     assert set(seen[0]) == {
         "step_index",
-        "episode_index",
         "state",
         "action",
         "reward",
-        "done",
+        "terminated",
+        "truncated",
         "next_state",
     }
     assert seen[0]["step_index"] == 0
-    assert seen[0]["episode_index"] == 0
     assert seen[0]["state"] is None
     assert seen[0]["action"] is None
     assert seen[0]["reward"] == 0.0
-    assert seen[0]["done"] == DONE_RUNNING
+    assert seen[0]["terminated"] is False
+    assert seen[0]["truncated"] is False
     assert seen[0]["next_state"] == 0
     assert seen[1]["step_index"] == 1
-    assert seen[1]["episode_index"] == 0
     assert seen[1]["state"] == 0
+    assert seen[1]["action"] == 1
     assert seen[1]["next_state"] == 1
     assert seen[1]["reward"] == 1.0
-    assert seen[1]["done"] == DONE_RUNNING
-    np.testing.assert_array_equal(seen[1]["action"], first_in["action"])
+    assert seen[1]["terminated"] is False
+    assert seen[1]["truncated"] is False
     assert seen[2]["step_index"] == 2
-    assert seen[2]["episode_index"] == 0
     assert seen[2]["state"] == 1
+    assert seen[2]["action"] == 0
     assert seen[2]["next_state"] == 2
     assert seen[2]["reward"] == 2.0
-    assert seen[2]["done"] == DONE_TERMINATED
-    np.testing.assert_array_equal(seen[2]["action"], second_in["action"])
+    assert seen[2]["terminated"] is True
+    assert seen[2]["truncated"] is False
 
 
 def test_reward_transform_accepts_kwargs_function() -> None:
     def scale(*, reward: float, **_kwargs: object) -> float:
         return reward * 10.0
 
-    cfg = EnvConfig(
-        seed=0,
-        env_fn=ImmediateTerminateEnv,
-        terminate_task=_terminate_on_episode_terminate,
-        reward_transform=scale,
+    env = make_env(
+        EnvConfig(seed=0, env_fn=ImmediateTerminateEnv, reward_transform=scale)
     )
-    env = make_env(cfg)
     try:
-        env.step(env.sample_random_input())
-        terminal = env.step(env.sample_random_input())
-        assert terminal["reward"].item() == 10.0
+        env.step(env.action_space.sample())
+        _obs, reward, _terminated, _truncated, _info = env.step(env.action_space.sample())
+        assert reward == 10.0
         assert env.metrics.episode_cum_rewards == [10.0]
     finally:
         env.close()
@@ -923,111 +546,60 @@ def test_reset_frame_reward_from_transform_is_in_metrics() -> None:
     def transform(*, step_index: int, reward: float, **_kwargs: object) -> float:
         return -1.0 if step_index == 0 else reward * 10.0
 
-    cfg = EnvConfig(
-        seed=0,
-        env_fn=ImmediateTerminateEnv,
-        terminate_task=_terminate_on_episode_terminate,
-        reward_transform=transform,
+    env = make_env(
+        EnvConfig(seed=0, env_fn=ImmediateTerminateEnv, reward_transform=transform)
     )
-    env = make_env(cfg)
     try:
-        reset = env.step(env.sample_random_input())
-        assert reset["reward"].item() == -1.0
+        _obs, reward, _terminated, _truncated, _info = env.step(env.action_space.sample())
+        assert reward == -1.0
         assert env.metrics.episode_cum_rewards == []
-        terminal = env.step(env.sample_random_input())
-        assert terminal["reward"].item() == 10.0
+        _obs, reward, _terminated, _truncated, _info = env.step(env.action_space.sample())
+        assert reward == 10.0
         assert env.metrics.episode_cum_rewards == [9.0]
-        assert env.metrics.task_cum_rewards == [9.0]
+        assert env.metrics.episode_lengths == [1.0]
     finally:
         env.close()
 
 
-def test_reward_transform_uses_indexes_for_reset_kind() -> None:
-    def transform(*, step_index: int, episode_index: int, reward: float, **_kwargs: object) -> float:
-        if step_index == 0 and episode_index == 0:
-            return -2.0
-        if step_index == 0:
-            return -1.0
-        return reward
+def test_later_reset_frames_use_the_same_transform() -> None:
+    def transform(*, step_index: int, reward: float, **_kwargs: object) -> float:
+        return -1.0 if step_index == 0 else reward
 
-    cfg = EnvConfig(
-        seed=0,
-        env_fn=ImmediateTerminateEnv,
-        max_task_episodes=2,
-        reward_transform=transform,
+    env = make_env(
+        EnvConfig(seed=0, env_fn=ImmediateTerminateEnv, reward_transform=transform)
     )
-    env = make_env(cfg)
     try:
-        task_reset = env.step(env.sample_random_input())
-        assert task_reset["reward"].item() == -2.0
-        env.step(env.sample_random_input())
-        episode_reset = env.step(env.sample_random_input())
-        assert int(episode_reset["episode_index"]) == 1
-        assert episode_reset["reward"].item() == -1.0
-        env.step(env.sample_random_input())
-        next_task = env.step(env.sample_random_input())
-        assert int(next_task["task_index"]) == 1
-        assert int(next_task["episode_index"]) == 0
-        assert next_task["reward"].item() == -2.0
+        _obs, reward, _terminated, _truncated, _info = env.step(env.action_space.sample())
+        assert reward == -1.0
+        env.step(env.action_space.sample())
+        _obs, reward, terminated, _truncated, _info = env.step(env.action_space.sample())
+        assert env.step_index == 0
+        assert reward == -1.0
+        assert terminated is False
     finally:
         env.close()
-
-
-def test_env_config_rejects_non_callable_terminate_task() -> None:
-    with pytest.raises(ValueError, match="terminate_task"):
-        EnvConfig(
-            id="CartPole-v1",
-            seed=0,
-            terminate_task=cast(Any, True),
-        )
 
 
 def test_env_config_rejects_non_callable_reward_transform() -> None:
     with pytest.raises(ValueError, match="reward_transform"):
-        EnvConfig(
-            id="CartPole-v1",
-            seed=0,
-            reward_transform=cast(Any, 2.0),
-        )
+        EnvConfig(id="CartPole-v1", seed=0, reward_transform=cast(Any, 2.0))
 
 
-def test_task_metrics_record_on_terminate() -> None:
-    cfg = EnvConfig(
-        seed=0,
-        env_fn=ImmediateTerminateEnv,
-        terminate_task=_terminate_on_episode_terminate,
+def test_step_index_resets_after_gym_done() -> None:
+    env = make_env(
+        EnvConfig(id="CartPole-v1", seed=0, kwargs={"max_episode_steps": 8})
     )
-    env = make_env(cfg)
     try:
-        env.step(env.sample_random_input())
-        env.step(env.sample_random_input())
-        assert env.metrics.episode_cum_rewards == [1.0]
-        assert env.metrics.episode_lengths == [1.0]
-        assert env.metrics.task_cum_rewards == [1.0]
-        assert env.metrics.task_lengths == [1.0]
-    finally:
-        env.close()
-
-
-def test_step_index_resets_on_episode_restart() -> None:
-    cfg = EnvConfig(
-        id="CartPole-v1",
-        seed=0,
-        max_task_episodes=5,
-        kwargs={"max_episode_steps": 8},
-    )
-    env = make_env(cfg)
-    try:
-        output = env.step(env.sample_random_input())
-        assert output["step_index"].item() == 0
+        _obs, _reward, terminated, truncated, _info = env.step(env.action_space.sample())
+        assert env.step_index == 0
         saw_nonzero = False
         for _ in range(100):
-            prev = int(output["step_index"].item())
-            output = env.step(env.sample_random_input())
-            cur = int(output["step_index"].item())
+            prev = env.step_index
+            _obs, _reward, terminated, truncated, _info = env.step(env.action_space.sample())
+            cur = env.step_index
             if cur == 0 and prev > 0:
-                assert int(output["episode_done"].item()) == 0
-                assert int(output["task_done"].item()) == 0
+                assert terminated is False
+                assert truncated is False
                 return
             if cur > 0:
                 saw_nonzero = True
@@ -1039,33 +611,68 @@ def test_step_index_resets_on_episode_restart() -> None:
         env.close()
 
 
-def test_episode_index_resets_at_task_boundary() -> None:
-    cfg = EnvConfig(
-        id="CartPole-v1",
-        seed=0,
-        max_task_episodes=2,
-        kwargs={"max_episode_steps": 5},
-    )
-    env = make_env(cfg)
+def test_observation_episode_flags_do_not_end_the_segment() -> None:
+    """Flags inside the observation are data. Only Gymnasium flags end a segment."""
+
+    class FlagInObsEnv(gym.Env):
+        def __init__(self) -> None:
+            self.observation_space = gym.spaces.Dict(
+                {
+                    "observation": gym.spaces.Box(0.0, 1.0, shape=(1,), dtype=np.float32),
+                    "episode_terminated": gym.spaces.Discrete(2),
+                    "episode_truncated": gym.spaces.Discrete(2),
+                }
+            )
+            self.action_space = gym.spaces.Discrete(2)
+            self.resets = 0
+            self.n = 0
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            self.resets += 1
+            self.n = 0
+            return self._obs(False), {}
+
+        def step(self, action):
+            self.n += 1
+            episode_flag = self.n == 1
+            task_end = self.n == 3
+            return self._obs(episode_flag), 1.0, task_end, False, {}
+
+        def _obs(self, episode_terminated: bool) -> dict[str, Any]:
+            return {
+                "observation": np.zeros(1, dtype=np.float32),
+                "episode_terminated": episode_terminated,
+                "episode_truncated": False,
+            }
+
+    env = make_env(EnvConfig(seed=0, env_fn=FlagInObsEnv))
     try:
-        max_episode_in_task = 0
-        saw_task_reset = False
-        prev_task = 0
-        for _ in range(200):
-            output = env.step(env.sample_random_input())
-            ep = int(output["episode_index"])
-            task = int(output["task_index"])
-            assert ep >= 0
-            assert ep < 2, f"episode_index={ep} should stay within task (max_task_episodes=2)"
-            max_episode_in_task = max(max_episode_in_task, ep)
-            if task > prev_task:
-                assert ep == 0
-                assert int(output["step_index"].item()) == 0
-                saw_task_reset = True
-                break
-            prev_task = task
-        assert max_episode_in_task == 1, "expected to reach episode_index=1 within a task"
-        assert saw_task_reset, "expected episode_index to reset to 0 after a task boundary"
+        observation, _reward, terminated, _truncated, _info = env.step(0)
+        assert env.step_index == 0
+        assert env.metrics.episode_cum_rewards == []
+
+        observation, _reward, terminated, _truncated, _info = env.step(0)
+        assert bool(observation["episode_terminated"]) is True
+        assert terminated is False
+        assert env.step_index == 1
+        assert env.metrics.episode_cum_rewards == []
+
+        observation, _reward, _terminated, _truncated, _info = env.step(0)
+        assert env.step_index == 2
+        assert bool(observation["episode_terminated"]) is False
+
+        _observation, _reward, terminated, _truncated, _info = env.step(0)
+        assert terminated is True
+        assert env.step_index == 3
+        assert env.metrics.episode_cum_rewards == [3.0]
+        assert env.metrics.episode_lengths == [3.0]
+
+        _observation, _reward, terminated, _truncated, _info = env.step(0)
+        assert env.step_index == 0
+        assert terminated is False
+        inner = cast(FlagInObsEnv, env._env_instance._env.unwrapped)
+        assert inner.resets == 2
     finally:
         env.close()
 
@@ -1096,11 +703,6 @@ def test_env_config_rejects_render_with_env_fn() -> None:
         EnvConfig(seed=0, env_fn=make_cartpole, render=True)
 
 
-def test_env_config_rejects_negative_max_task_episodes() -> None:
-    with pytest.raises(ValueError, match="max_task_episodes"):
-        EnvConfig(id="CartPole-v1", seed=0, max_task_episodes=-1)
-
-
 def test_env_fn_default_name_from_callable() -> None:
     class NamedEnv(gym.Env):
         observation_space = gym.spaces.Discrete(1)
@@ -1126,22 +728,18 @@ def test_anonymous_env_fn_requires_name() -> None:
 
 
 def test_metrics_accumulates_and_clears() -> None:
-    cfg = EnvConfig(
-        id="CartPole-v1",
-        seed=0,
-        max_task_episodes=5,
-        kwargs={"max_episode_steps": 10},
+    env = make_env(
+        EnvConfig(id="CartPole-v1", seed=0, kwargs={"max_episode_steps": 10})
     )
-    env = make_env(cfg)
     try:
         assert isinstance(env.metrics, Metrics)
         assert env.metrics.episode_cum_rewards == []
         assert env.metrics.episode_lengths == []
-        assert env.metrics.task_cum_rewards == []
-        assert env.metrics.task_lengths == []
+        assert not hasattr(env.metrics, "task_cum_rewards")
+        assert not hasattr(env.metrics, "task_lengths")
 
         for _ in range(200):
-            env.step(env.sample_random_input())
+            env.step(env.action_space.sample())
             if env.metrics.episode_cum_rewards:
                 break
         else:
@@ -1152,71 +750,29 @@ def test_metrics_accumulates_and_clears() -> None:
         assert len(rewards) >= 1
         assert len(lengths) == len(rewards)
         assert all(isinstance(r, float) for r in rewards)
-        assert all(isinstance(l, float) for l in lengths)
+        assert all(isinstance(length, float) for length in lengths)
 
         env.metrics.clear()
         assert env.metrics.episode_cum_rewards == []
         assert env.metrics.episode_lengths == []
-        assert env.metrics.task_cum_rewards == []
-        assert env.metrics.task_lengths == []
-    finally:
-        env.close()
-
-
-def test_task_metrics_accumulates_and_clears() -> None:
-    max_task_episodes = 2
-    cfg = EnvConfig(
-        id="CartPole-v1",
-        seed=0,
-        max_task_episodes=max_task_episodes,
-        kwargs={"max_episode_steps": 10},
-    )
-    env = make_env(cfg)
-    try:
-        assert env.metrics.task_cum_rewards == []
-        assert env.metrics.task_lengths == []
-
-        for _ in range(500):
-            env.step(env.sample_random_input())
-            if env.metrics.task_cum_rewards:
-                break
-        else:
-            raise AssertionError("no task completed within 500 steps")
-
-        task_rewards = env.metrics.task_cum_rewards
-        task_lengths = env.metrics.task_lengths
-        assert len(task_rewards) >= 1
-        assert len(task_lengths) == len(task_rewards)
-
-        episode_rewards = env.metrics.episode_cum_rewards
-        episode_lengths = env.metrics.episode_lengths
-        assert len(episode_rewards) >= max_task_episodes
-        assert task_rewards[0] == sum(episode_rewards[:max_task_episodes])
-        assert task_lengths[0] == sum(episode_lengths[:max_task_episodes])
-
-        env.metrics.clear()
-        assert env.metrics.task_cum_rewards == []
-        assert env.metrics.task_lengths == []
     finally:
         env.close()
 
 
 def test_group_env_max_threads_default_is_main_thread() -> None:
-    env = make_group_env(
-        [EnvConfig(id="CartPole-v1", seed=i, max_task_episodes=5) for i in range(3)]
-    )
+    env = make_group_env([EnvConfig(id="CartPole-v1", seed=i) for i in range(3)])
     try:
         assert env.max_threads == 0
         outputs = _rollout(env, steps=3)
         assert len(outputs) == 3
-        assert all(int(o["step_index"]) >= 0 for o in outputs)
+        assert all(single.step_index >= 0 for single in env.envs)
     finally:
         env.close()
 
 
 def test_group_env_max_threads_distributes_steps() -> None:
     env = make_group_env(
-        [EnvConfig(id="CartPole-v1", seed=i, name=f"cp-{i}", max_task_episodes=5) for i in range(4)],
+        [EnvConfig(id="CartPole-v1", seed=i, name=f"cp-{i}") for i in range(4)],
         max_threads=2,
     )
     try:
@@ -1224,11 +780,11 @@ def test_group_env_max_threads_distributes_steps() -> None:
         outputs = _rollout(env, steps=5)
         assert len(outputs) == 4
         assert env.names == ("cp-0", "cp-1", "cp-2", "cp-3")
-        for o in outputs:
-            assert "observation" in o
-            assert "episode_done" in o
-            assert "task_done" in o
-            assert "done" not in o
+        for observation, _reward, terminated, truncated, info in outputs:
+            assert observation.shape == (4,)
+            assert isinstance(terminated, bool)
+            assert isinstance(truncated, bool)
+            assert isinstance(info, dict)
     finally:
         env.close()
 
@@ -1236,27 +792,23 @@ def test_group_env_max_threads_distributes_steps() -> None:
 def test_group_env_max_threads_matches_sequential_contract() -> None:
     """Threaded and sequential groups with the same seeds produce matching trajectories."""
     cfgs = [
-        EnvConfig(id="CartPole-v1", seed=i, max_task_episodes=5, kwargs={"max_episode_steps": 8})
+        EnvConfig(id="CartPole-v1", seed=i, kwargs={"max_episode_steps": 8})
         for i in range(3)
     ]
     sequential = make_group_env(cfgs, max_threads=0)
     threaded = make_group_env(cfgs, max_threads=3)
     try:
         for _ in range(20):
-            seq_in = sequential.sample_random_input()
-            # Reuse the same actions so trajectories stay comparable.
-            thr_in = [{"action": inp["action"].copy()} for inp in seq_in]
-            seq_out = sequential.step(seq_in)
-            thr_out = threaded.step(thr_in)
+            actions = sequential.action_space.sample()
+            seq_out = sequential.step(actions)
+            thr_out = threaded.step(actions)
             assert len(seq_out) == len(thr_out)
-            for s, t in zip(seq_out, thr_out):
-                assert int(s["episode_done"]) == int(t["episode_done"])
-                assert int(s["task_done"]) == int(t["task_done"])
-                assert int(s["step_index"]) == int(t["step_index"])
-                assert int(s["episode_index"]) == int(t["episode_index"])
-                assert int(s["task_index"]) == int(t["task_index"])
-                np.testing.assert_array_equal(s["observation"], t["observation"])
-                np.testing.assert_array_equal(s["reward"], t["reward"])
+            for i, (seq, thr) in enumerate(zip(seq_out, thr_out)):
+                assert seq[2] == thr[2]
+                assert seq[3] == thr[3]
+                assert sequential.envs[i].step_index == threaded.envs[i].step_index
+                np.testing.assert_array_equal(seq[0], thr[0])
+                assert seq[1] == thr[1]
     finally:
         sequential.close()
         threaded.close()
@@ -1264,7 +816,4 @@ def test_group_env_max_threads_matches_sequential_contract() -> None:
 
 def test_group_env_rejects_negative_max_threads() -> None:
     with pytest.raises(ValueError, match="max_threads"):
-        make_group_env(
-            [EnvConfig(id="CartPole-v1", seed=0)],
-            max_threads=-1,
-        )
+        make_group_env([EnvConfig(id="CartPole-v1", seed=0)], max_threads=-1)

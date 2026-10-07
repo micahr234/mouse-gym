@@ -2,105 +2,23 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
-from typing import Any, Required, TypedDict, cast
+from typing import Any, Literal
 
 import gymnasium as gym
 import numpy as np
 
-ACTION_KEY = "action"
-OBS_KEY = "observation"
-
-STEP_INDEX_KEY = "step_index"
-
-DONE_RUNNING = 0
-DONE_TERMINATED = 1
-DONE_TRUNCATED = 2
-
-
-def _np_dtype_for_space(space: gym.Space) -> np.dtype:
-    """Map a Gymnasium space dtype to the numpy dtype used to store its samples."""
-    raw = getattr(space, "dtype", None)
-    if raw is None:
-        return np.dtype(np.float32)
-    return np.dtype(raw)
-
-
-@dataclass
-class FieldSpec:
-    """Describes one field in an output or input dict.
-
-    ``dtype`` is the numpy dtype or Python type of the value (e.g. ``np.float32``,
-    ``np.int64``, ``int``). ``shape`` is the array shape as a tuple; ``()`` for
-    scalars and plain Python primitives.
-    """
-
-    dtype: np.dtype | type
-    shape: tuple[int, ...]
-
-
-@dataclass
-class OutputSpec:
-    """Mirrors the output dict: one attribute per key in ``outputs[i]``.
-
-    ``observation`` is a single :class:`FieldSpec` for standard observation spaces, or
-    a ``dict[str, FieldSpec]`` for ``gym.spaces.Dict`` observation spaces.
-
-    The underlying Gymnasium ``info`` dict is forwarded verbatim in the step output
-    under the ``info`` key. No env-specific filtering is applied.
-    """
-
-    task_index: FieldSpec
-    episode_index: FieldSpec
-    step_index: FieldSpec
-    reward: FieldSpec
-    task_done: FieldSpec
-    episode_done: FieldSpec
-    observation: FieldSpec | dict[str, FieldSpec]
-
-
-@dataclass
-class InputSpec:
-    """Mirrors the input dict: one attribute per key in ``inputs[i]``.
-
-    ``action`` describes the single ``"action"`` array. Its ``dtype`` and shape
-    mirror the underlying Gymnasium action space where possible.
-    """
-
-    action: FieldSpec
-
-
-class StepOutput(TypedDict, total=False):
-    """All per-env fields for one step (single-env view, ``outputs[i]``).
-
-    Array fields are ``np.ndarray`` scalars or vectors; ``episode_index`` and
-    ``task_index`` are plain ``int``. The ``observation`` field is an array for
-    ordinary observation spaces, or a ``dict[str, np.ndarray]`` for
-    ``gym.spaces.Dict`` observation spaces.
-
-    The underlying Gymnasium ``info`` dict is forwarded verbatim under ``info``.
-    For example, ``outputs[i]["info"]["q_star"]``, ``outputs[i]["info"]["map"]``,
-    and ``outputs[i]["info"]["ns_params"]`` when the env emits those keys.
-    """
-
-    task_index: Required[int]
-    episode_index: Required[int]
-    step_index: Required[np.ndarray]
-    reward: Required[np.ndarray]
-    task_done: Required[np.ndarray]
-    episode_done: Required[np.ndarray]
-    observation: np.ndarray | dict[str, np.ndarray]
-    info: dict[str, Any]
+_RESET_SEED_BOUND = 2**32
 
 
 class Metrics:
-    """Accumulates episode and task statistics for a single :class:`SingleEnv`.
+    """Accumulates episode statistics for a single :class:`SingleEnv`.
 
-    :class:`SingleEnv` feeds completed-episode and completed-task results
-    automatically. Call :meth:`clear` to wipe all accumulated data (e.g.
-    between evaluation runs).
+    :class:`SingleEnv` records a completed episode whenever the wrapped env
+    reports ``terminated`` or ``truncated``. Those flags mean whatever the
+    wrapped env uses them for. Call :meth:`clear` to wipe accumulated data
+    (for example between evaluation runs).
 
     Attributes
     ----------
@@ -111,34 +29,20 @@ class Metrics:
     episode_lengths:
         List of episode step counts for every completed episode since the last
         :meth:`clear` call.
-    task_cum_rewards:
-        List of cumulative rewards summed across every episode in each
-        completed task since the last :meth:`clear` call.
-    task_lengths:
-        List of total step counts summed across every episode in each completed
-        task since the last :meth:`clear` call.
     """
 
     def __init__(self) -> None:
         self._episode_cum_rewards: list[float] = []
         self._episode_lengths: list[float] = []
-        self._task_cum_rewards: list[float] = []
-        self._task_lengths: list[float] = []
 
     def _record(self, cum_reward: float, length: float) -> None:
         self._episode_cum_rewards.append(cum_reward)
         self._episode_lengths.append(length)
 
-    def _record_task(self, cum_reward: float, length: float) -> None:
-        self._task_cum_rewards.append(cum_reward)
-        self._task_lengths.append(length)
-
     def clear(self) -> None:
-        """Wipe all accumulated episode and task data."""
+        """Wipe all accumulated episode data."""
         self._episode_cum_rewards = []
         self._episode_lengths = []
-        self._task_cum_rewards = []
-        self._task_lengths = []
 
     @property
     def episode_cum_rewards(self) -> list[float]:
@@ -150,33 +54,22 @@ class Metrics:
         """Episode lengths (step counts) for completed episodes."""
         return self._episode_lengths
 
-    @property
-    def task_cum_rewards(self) -> list[float]:
-        """Cumulative rewards summed across episodes in completed tasks."""
-        return self._task_cum_rewards
-
-    @property
-    def task_lengths(self) -> list[float]:
-        """Total step counts summed across episodes in completed tasks."""
-        return self._task_lengths
-
 
 class _EnvInstance:
     """Internal: wraps a single ``gym.Env`` with the mouse-gym step protocol.
 
-    Each env instance manages its own episode state — step index, episode index,
-    and cumulative rewards — and implements the two-frame boundary sequence: a
-    terminal step (``episode_done=1/2``) followed by a reset frame
-    (    ``episode_done=0``, ``task_done=0``, ``step_index=0``) on the next
-    ``step()`` call, with the user's action on the reset-frame call silently
-    ignored.
+    Each env instance tracks its step index and cumulative reward, and implements
+    the two-frame boundary sequence: a step where the wrapped env reports
+    ``terminated`` or ``truncated``, followed by a reset frame
+    (``terminated=False``, ``truncated=False``, ``step_index=0``) on the next
+    ``step()`` call. The user's action on the reset-frame call is ignored.
 
-    Seeding: one seed is drawn from the ``seed`` stream per task and passed to
-    ``env.reset(seed=...)`` at the task-start reset only. Episode resets within
-    a task do not reseed — the env's RNG continues, following Gymnasium's
-    seed-once-per-session convention. Each task is therefore a fresh, seeded
-    Gymnasium session: reproducible as a whole, with episode-level randomness
-    (e.g. start positions) still varying across episodes.
+    Seeding follows ``seed_mode``: ``"constant"`` repeats ``seed``,
+    ``"stream"`` draws a new reset seed from an RNG started with ``seed``,
+    and ``"none"`` passes ``None``.
+
+    ``step`` takes a Gymnasium action and returns
+    ``(observation, reward, terminated, truncated, info)``.
     """
 
     def __init__(
@@ -184,167 +77,48 @@ class _EnvInstance:
         env: gym.Env,
         name: str,
         *,
-        seed: int,
+        seed: int | None,
+        seed_mode: Literal["constant", "stream", "none"],
         reward_transform: Callable[..., float] | None = None,
-        episode_reset_options: dict | None = None,
-        task_reset_options: dict | None = None,
-        max_task_episodes: int,
-        terminate_task: Callable[..., bool] | None = None,
+        reset_options: dict | None = None,
     ):
         self._env = env
         self._name = name
         self._reward_transform = reward_transform
-        self._episode_reset_options = dict(episode_reset_options or {})
-        self._task_reset_options = dict(task_reset_options or {})
-        self._max_task_episodes = int(max_task_episodes)
-        self._terminate_task = terminate_task
-
-        # Seed stream: advances once per task, consumed at task-start resets.
-        self._seed_rng = np.random.default_rng(seed)
+        self._reset_options = dict(reset_options or {})
+        self._seed = seed
+        self._seed_mode = seed_mode
+        self._seed_rng = np.random.default_rng(seed) if seed_mode == "stream" else None
 
         # Episode state
         self._needs_initial_reset = True
         self._autoreset_pending = False
-        self._task_done_pending = False
         self._step_index = 0
-        self._episode_index = 0
         self._state: Any = None
-        self._task_episode_count = 0  # episodes completed in current task
-        self._task_index = 0
         self._episode_cum_reward = 0.0
-        self._task_cum_reward = 0.0
-        self._task_cum_length = 0.0
 
         # Cache spaces so step() does not hop Gymnasium wrapper properties.
         self._action_space = env.action_space
         self._observation_space = env.observation_space
-        self._discrete_action = isinstance(self._action_space, gym.spaces.Discrete)
-        self._multidiscrete_action = isinstance(self._action_space, gym.spaces.MultiDiscrete)
-
-        # Spec
-        self._obs_channel, self._obs_dtypes, self._output_spec, self._input_spec = (
-            self._build_specs()
-        )
 
     @property
     def name(self) -> str:
         return self._name
 
     @property
-    def output_spec(self) -> OutputSpec:
-        return self._output_spec
-
-    @property
-    def input_spec(self) -> InputSpec:
-        return self._input_spec
-
-    def _build_specs(
-        self,
-    ) -> tuple[
-        str | None,
-        dict[str, np.dtype],
-        OutputSpec,
-        InputSpec,
-    ]:
-        obs_space = self._observation_space
-        act_space = self._action_space
-
-        # --- observation side ---
-        if isinstance(obs_space, gym.spaces.Dict):
-            obs_dtypes: dict[str, np.dtype] = {
-                key: _np_dtype_for_space(sub)
-                for key, sub in obs_space.spaces.items()
-            }
-            single_channel = None
-            obs_field: FieldSpec | dict[str, FieldSpec] = {
-                key: FieldSpec(
-                    dtype=obs_dtypes[key],
-                    shape=tuple(getattr(sub, "shape", ()) or ()),
-                )
-                for key, sub in obs_space.spaces.items()
-            }
-        else:
-            obs_np_dtype = _np_dtype_for_space(obs_space)
-            obs_dtypes = {OBS_KEY: obs_np_dtype}
-            single_channel = OBS_KEY
-            obs_shape = tuple(getattr(obs_space, "shape", ()) or ())
-            obs_field = FieldSpec(dtype=obs_np_dtype, shape=obs_shape)
-
-        # --- action side ---
-        act_np_dtype = _np_dtype_for_space(act_space)
-        if isinstance(act_space, gym.spaces.Discrete):
-            act_shape: tuple[int, ...] = ()
-        elif isinstance(act_space, gym.spaces.MultiDiscrete):
-            act_shape = (len(act_space.nvec),)
-        else:
-            act_shape = tuple(getattr(act_space, "shape", ()) or ())
-
-        output_spec = OutputSpec(
-            task_index=FieldSpec(dtype=int, shape=()),
-            episode_index=FieldSpec(dtype=int, shape=()),
-            step_index=FieldSpec(dtype=np.dtype(np.int64), shape=()),
-            reward=FieldSpec(dtype=np.dtype(np.float32), shape=()),
-            task_done=FieldSpec(dtype=np.dtype(np.int64), shape=()),
-            episode_done=FieldSpec(dtype=np.dtype(np.int64), shape=()),
-            observation=obs_field,
-        )
-        input_spec = InputSpec(action=FieldSpec(dtype=act_np_dtype, shape=act_shape))
-        return single_channel, obs_dtypes, output_spec, input_spec
-
-    def sample_random_input(self) -> dict:
-        """Sample a random action as a ``dict`` with a flat ``"action"`` key.
-
-        The array matches :attr:`input_spec` — same dtype and shape.
-        """
-        spec = self._input_spec.action
-        act_dtype = cast(np.dtype, spec.dtype)
-        raw = self._action_space.sample()
-        action = np.asarray(raw, dtype=act_dtype).reshape(spec.shape)
-        return {ACTION_KEY: action}
-
-    def _require_input(self, input_dict: Any) -> np.ndarray:
-        """Extract and validate the ``"action"`` key from an input dict."""
-        if not isinstance(input_dict, dict):
-            raise ValueError(
-                f"input must be a dict with an '{ACTION_KEY}' entry, "
-                f"got {type(input_dict).__name__}."
-            )
-        if ACTION_KEY not in input_dict:
-            raise ValueError(
-                f"input must contain the '{ACTION_KEY}' key; "
-                f"got keys {sorted(input_dict.keys())}."
-            )
-        value = cast(Any, input_dict)[ACTION_KEY]
-        if isinstance(value, np.ndarray):
-            return value
-        return np.asarray(value)
-
-    def _prepare_action(self, action_np: np.ndarray) -> Any:
-        """Convert a numpy action array to the format expected by ``gym.Env.step``."""
-        if self._discrete_action:
-            if action_np.ndim == 0:
-                return int(action_np)
-            return int(action_np.reshape(-1)[0])
-        space = self._action_space
-        if self._multidiscrete_action:
-            dtype = getattr(space, "dtype", np.int64)
-            return np.asarray(action_np, dtype=dtype).reshape(-1)
-        dtype = getattr(space, "dtype", None)
-        arr = np.asarray(action_np, dtype=dtype) if dtype is not None else np.asarray(action_np)
-        return arr.reshape(getattr(space, "shape", ()) or ())
-
-    def _reward_array(self, raw_reward: Any) -> np.ndarray:
-        return np.asarray(raw_reward, dtype=np.float32)
+    def step_index(self) -> int:
+        """Steps since the last mouse-gym reset. ``0`` on a reset frame."""
+        return self._step_index
 
     def _apply_reward_transform(
         self,
         *,
         step_index: int,
-        episode_index: int,
         state: Any,
         action: Any,
         reward: float,
-        done: int,
+        terminated: bool,
+        truncated: bool,
         next_state: Any,
     ) -> float:
         if self._reward_transform is None:
@@ -352,224 +126,90 @@ class _EnvInstance:
         return float(
             self._reward_transform(
                 step_index=step_index,
-                episode_index=episode_index,
                 state=state,
                 action=action,
                 reward=reward,
-                done=done,
+                terminated=terminated,
+                truncated=truncated,
                 next_state=next_state,
             )
         )
 
-    def _apply_terminate_task(
-        self,
-        *,
-        step_index: int,
-        episode_index: int,
-        state: Any,
-        action: Any,
-        reward: float,
-        done: int,
-        next_state: Any,
-    ) -> bool:
-        if self._terminate_task is None:
-            return False
-        return bool(
-            self._terminate_task(
-                step_index=step_index,
-                episode_index=episode_index,
-                state=state,
-                action=action,
-                reward=reward,
-                done=done,
-                next_state=next_state,
-            )
-        )
+    def _next_reset_seed(self) -> int | None:
+        """Seed argument for the next internal ``env.reset``."""
+        if self._seed_mode == "none":
+            return None
+        if self._seed_mode == "constant":
+            assert self._seed is not None
+            return self._seed
+        assert self._seed_rng is not None
+        return int(self._seed_rng.integers(0, _RESET_SEED_BOUND))
 
-    def _obs_entry(self, obs: Any) -> dict[str, np.ndarray | dict[str, np.ndarray]]:
-        """Build observation field(s) from a single-env observation."""
-        if isinstance(obs, dict):
-            return {OBS_KEY: {k: np.asarray(v) for k, v in obs.items()}}
-        channel = cast(str, self._obs_channel)
-        return {channel: np.asarray(obs)}
-
-    def _make_output(
-        self,
-        *,
-        step_index: int,
-        reward: np.ndarray,
-        episode_done: int,
-        task_done: int,
-        obs: Any,
-        info: dict[str, Any],
-    ) -> dict:
-        """Build a step output dict with stable key order.
-
-        Order: indexes coarsest-to-finest (``task_index``, ``episode_index``,
-        ``step_index``), then ``reward``, ``task_done``, ``episode_done``,
-        ``observation``, then ``info``.
-        """
-        output: dict = {
-            "task_index": self._task_index,
-            "episode_index": self._episode_index,
-            STEP_INDEX_KEY: np.array(step_index, dtype=np.int64),
-            "reward": reward,
-            "task_done": np.array(task_done, dtype=np.int64),
-            "episode_done": np.array(episode_done, dtype=np.int64),
-        }
-        output.update(self._obs_entry(obs))
-        output["info"] = info
-        return output
-
-    def _reset_options_for_boundary(self, *, task_start: bool) -> dict[str, Any]:
-        options = dict(self._episode_reset_options)
-        if task_start:
-            options.update(self._task_reset_options)
-        return options
-
-    def _do_reset(self, *, task_start: bool) -> tuple[dict, None, None]:
-        """Call env.reset() and return the reset-frame output; no metric results.
-
-        A seed is drawn and passed to ``env.reset(seed=...)`` only when a task
-        starts; episode resets within the task pass no seed, so the env's RNG
-        continues and the whole task is a deterministic function of its seed.
-        """
-        seed = int(self._seed_rng.integers(0, 2**31)) if task_start else None
-        reset_options = self._reset_options_for_boundary(task_start=task_start)
+    def _do_reset(self) -> tuple[tuple[Any, float, bool, bool, dict[str, Any]], None]:
+        """Call env.reset() and return the reset-frame tuple; no metric result."""
         obs, info = self._env.reset(
-            seed=seed,
-            options=reset_options or None,
+            seed=self._next_reset_seed(),
+            options=dict(self._reset_options) or None,
         )
         self._step_index = 0
         reward_f = self._apply_reward_transform(
             step_index=0,
-            episode_index=self._episode_index,
             state=self._state,
             action=None,
             reward=0.0,
-            done=DONE_RUNNING,
+            terminated=False,
+            truncated=False,
             next_state=obs,
         )
         self._episode_cum_reward = reward_f
         self._state = obs
-
-        return (
-            self._make_output(
-                step_index=0,
-                reward=self._reward_array(reward_f),
-                episode_done=DONE_RUNNING,
-                task_done=DONE_RUNNING,
-                obs=obs,
-                info=info,
-            ),
-            None,
-            None,
-        )
+        return (obs, reward_f, False, False, info), None
 
     def step(
-        self, input_dict: dict
-    ) -> tuple[dict, tuple[float, float] | None, tuple[float, float] | None]:
-        """Step this env instance; return ``(output, episode_result, task_result)``.
+        self, action: Any
+    ) -> tuple[tuple[Any, float, bool, bool, dict[str, Any]], tuple[float, float] | None]:
+        """Step this env instance; return ``(output, episode_result)``.
 
-        ``episode_result`` is ``(cum_reward, length)`` when the episode ended on this
-        step, or ``None`` otherwise (including reset frames). ``task_result`` uses the
-        same shape when the task ended on this step (``task_done`` 1 or 2), or ``None``.
+        ``output`` is ``(observation, reward, terminated, truncated, info)``.
+        ``episode_result`` is ``(cum_reward, length)`` when the wrapped env
+        reports ``terminated`` or ``truncated`` on this step, or ``None``
+        otherwise (including reset frames).
         """
         if self._needs_initial_reset:
             self._needs_initial_reset = False
-            return self._do_reset(task_start=True)
+            return self._do_reset()
 
         if self._autoreset_pending:
             self._autoreset_pending = False
-            task_start = False
-            if self._task_done_pending:
-                self._task_done_pending = False
-                self._task_index += 1
-                self._task_episode_count = 0
-                self._episode_index = 0
-                task_start = True
-            else:
-                self._episode_index += 1
-                self._task_episode_count += 1
-            return self._do_reset(task_start=task_start)
+            return self._do_reset()
 
-        # Regular step — validate and unpack input
-        action_np = self._require_input(input_dict)
-        action = self._prepare_action(action_np)
         obs, raw_reward, terminated, truncated, info = self._env.step(action)
-
-        # episode_done comes from Gymnasium; task_done is independent.
-        # Both fields use 0/1/2. Hitting max_task_episodes is task truncation
-        # (2). terminate_task returning true is task termination (1) and
-        # wins if both would fire. max_task_episodes == 0 means no
-        # episode-count timeout.
-        if terminated:
-            episode_done = DONE_TERMINATED
-        elif truncated:
-            episode_done = DONE_TRUNCATED
-        else:
-            episode_done = DONE_RUNNING
+        terminated = bool(terminated)
+        truncated = bool(truncated)
 
         self._step_index += 1
 
         state = self._state
         reward_f = self._apply_reward_transform(
             step_index=self._step_index,
-            episode_index=self._episode_index,
             state=state,
-            action=action_np,
+            action=action,
             reward=float(raw_reward),
-            done=episode_done,
+            terminated=terminated,
+            truncated=truncated,
             next_state=obs,
         )
         self._episode_cum_reward += reward_f
         self._state = obs
 
-        if episode_done != DONE_RUNNING and self._apply_terminate_task(
-            step_index=self._step_index,
-            episode_index=self._episode_index,
-            state=state,
-            action=action_np,
-            reward=reward_f,
-            done=episode_done,
-            next_state=obs,
-        ):
-            task_done = DONE_TERMINATED
-        elif episode_done != DONE_RUNNING and self._max_task_episodes > 0 and (
-            self._task_episode_count + 1 == self._max_task_episodes
-        ):
-            task_done = DONE_TRUNCATED
-        else:
-            task_done = DONE_RUNNING
-
-        output = self._make_output(
-            step_index=self._step_index,
-            reward=self._reward_array(reward_f),
-            episode_done=episode_done,
-            task_done=task_done,
-            obs=obs,
-            info=info,
-        )
-
         episode_result: tuple[float, float] | None
-        task_result: tuple[float, float] | None
-        if episode_done != DONE_RUNNING:
+        if terminated or truncated:
             episode_result = (self._episode_cum_reward, float(self._step_index))
-            self._task_cum_reward += self._episode_cum_reward
-            self._task_cum_length += float(self._step_index)
-            if task_done != DONE_RUNNING:
-                task_result = (self._task_cum_reward, self._task_cum_length)
-                self._task_cum_reward = 0.0
-                self._task_cum_length = 0.0
-            else:
-                task_result = None
             self._autoreset_pending = True
-            self._task_done_pending = task_done != DONE_RUNNING
         else:
             episode_result = None
-            task_result = None
 
-        return output, episode_result, task_result
+        return (obs, reward_f, terminated, truncated, info), episode_result
 
     def render(self) -> list:
         """Return rendered frames from this env instance."""
@@ -590,28 +230,21 @@ class SingleEnv:
     Construct via :func:`mouse_gym.make_env` with a single :class:`EnvConfig`.
 
     ``step`` implements the reset-free mouse-gym protocol: the first call returns a
-    reset frame (``episode_done=0``, ``task_done=0``, ``step_index=0``, input
-    ignored). After each episode or task ends, the next ``step`` is also a reset
-    frame. There is no public ``reset()`` — including at task boundaries — so
+    reset frame (``terminated=False``, ``truncated=False``, ``step_index=0``,
+    action ignored). After the wrapped env reports ``terminated`` or ``truncated``,
+    the next ``step`` is also a reset frame. There is no public ``reset()``, so
     training loops stay a single ``step()`` stream.
 
-    Episode statistics are accumulated automatically in :attr:`metrics`
-    (:class:`Metrics`). Call ``env.metrics.clear()`` to wipe accumulated
-    data between evaluation runs.
+    ``step(action)`` returns Gymnasium's ``(observation, reward, terminated,
+    truncated, info)``. ``reward`` is a Python ``float`` after
+    ``reward_transform``. ``terminated`` and ``truncated`` are Python ``bool``s.
+    The observation and ``info`` dict are forwarded unchanged. Read
+    :attr:`step_index` for the count since the last mouse-gym reset (``0`` on a
+    reset frame).
 
-    Every output dict contains (in this key order):
-        task_index (int)            — task counter
-        episode_index (int)         — episode counter within the current task (resets at task end)
-        step_index (int64 array)    — step index within the episode (0-based; resets on episode restart)
-        reward (float32 array)      — env reward after ``reward_transform``
-                                      (also used on reset frames, where
-                                      ``step_index`` is 0; default ``0``)
-        task_done (int64 array)     — 0=running, 1=task terminated
-                                      (terminate_task returned true),
-                                      2=task truncated (max_task_episodes reached)
-        episode_done (int64 array)  — 0=running, 1=terminated, 2=truncated (Gymnasium only)
-        observation (array/dict)    — the observation emitted by the env
-        info (dict)                 — Gymnasium info dict from the underlying env step/reset
+    Episode statistics are accumulated automatically in :attr:`metrics`
+    (:class:`Metrics`) whenever those flags are true. Call
+    ``env.metrics.clear()`` to wipe accumulated data between evaluation runs.
     """
 
     def __init__(self, env_instance: _EnvInstance) -> None:
@@ -632,14 +265,9 @@ class SingleEnv:
         return self._env_instance.name
 
     @property
-    def output_spec(self) -> OutputSpec:
-        """Output contract for this env."""
-        return self._env_instance.output_spec
-
-    @property
-    def input_spec(self) -> InputSpec:
-        """Input contract for this env."""
-        return self._env_instance.input_spec
+    def step_index(self) -> int:
+        """Steps since the last mouse-gym reset. ``0`` on a reset frame."""
+        return self._env_instance.step_index
 
     @property
     def action_space(self) -> gym.Space:
@@ -652,33 +280,26 @@ class SingleEnv:
         return self._env_instance._observation_space
 
     def reset(self, **_kwargs: Any) -> None:
-        """Not supported — episode and task transitions happen inside ``step()``."""
+        """Not supported — episode transitions happen inside ``step()``."""
         raise NotImplementedError(
             "SingleEnv does not support public reset(); call step() only. "
-            "Episode and task boundaries are handled internally and appear as "
-            "reset frames in the step() output — including when a task ends."
+            "When the wrapped env reports terminated or truncated, the next "
+            "step() returns a reset frame."
         )
 
-    def sample_random_input(self) -> dict:
-        """Sample a random action dict for this env. Pass directly to ``step()``."""
-        return self._env_instance.sample_random_input()
+    def step(self, action: Any) -> tuple[Any, float, bool, bool, dict[str, Any]]:
+        """Step the env and return ``(observation, reward, terminated, truncated, info)``.
 
-    def step(self, input: dict) -> dict:
-        """Step the env and return one output dict.
-
-        On the first call and on any call immediately after an episode ends, the
-        input is ignored and a reset frame is returned instead.
+        On the first call and on any call immediately after ``terminated`` or
+        ``truncated``, ``action`` is ignored and a reset frame is returned instead.
 
         Completed-episode statistics are recorded automatically into :attr:`metrics`.
         Call ``env.metrics.clear()`` to reset between runs.
         """
-        output, episode_result, task_result = self._env_instance.step(input)
+        output, episode_result = self._env_instance.step(action)
         if episode_result is not None:
             cum_reward, length = episode_result
             self._metrics._record(cum_reward, length)
-        if task_result is not None:
-            task_cum_reward, task_length = task_result
-            self._metrics._record_task(task_cum_reward, task_length)
         return output
 
     def render(self) -> list:
@@ -693,10 +314,9 @@ class SingleEnv:
 class GroupMetrics:
     """Live read-through view over :class:`Metrics` instances of a :class:`GroupEnv`.
 
-    Stores no episode or task data of its own — all reads delegate to each
-    constituent :class:`SingleEnv`'s metrics. Multiple :class:`GroupEnv` instances
-    may point to overlapping sets of :class:`SingleEnv` objects without any data
-    conflicts.
+    Stores no episode data of its own — all reads delegate to each constituent
+    :class:`SingleEnv`'s metrics. Multiple :class:`GroupEnv` instances may point
+    to overlapping sets of :class:`SingleEnv` objects without any data conflicts.
 
     Attributes
     ----------
@@ -706,12 +326,6 @@ class GroupMetrics:
     episode_lengths:
         Per-env list of episode step counts. ``episode_lengths[i]`` is the list
         from ``envs[i].metrics.episode_lengths``.
-    task_cum_rewards:
-        Per-env list of task reward sums. ``task_cum_rewards[i]`` is the list from
-        ``envs[i].metrics.task_cum_rewards``.
-    task_lengths:
-        Per-env list of task length sums. ``task_lengths[i]`` is the list from
-        ``envs[i].metrics.task_lengths``.
     """
 
     def __init__(self, envs: list[SingleEnv]) -> None:
@@ -726,16 +340,6 @@ class GroupMetrics:
     def episode_lengths(self) -> list[list[float]]:
         """Per-env episode lengths, read live from each env's metrics."""
         return [e.metrics.episode_lengths for e in self._envs]
-
-    @property
-    def task_cum_rewards(self) -> list[list[float]]:
-        """Per-env task reward sums, read live from each env's metrics."""
-        return [e.metrics.task_cum_rewards for e in self._envs]
-
-    @property
-    def task_lengths(self) -> list[list[float]]:
-        """Per-env task length sums, read live from each env's metrics."""
-        return [e.metrics.task_lengths for e in self._envs]
 
     def clear(self) -> None:
         """Clear metrics on every constituent env."""
@@ -762,9 +366,9 @@ class GroupEnv:
     Each :class:`SingleEnv` owns its own :class:`Metrics`; ``GroupEnv.metrics``
     is a live read-through view with no independent storage.
 
-    ``step`` and ``sample_random_input`` use a flat list indexed by position.
-    ``inputs[i]`` is the input dict for the i-th env. ``step`` returns a flat
-    ``list[dict]`` — one per env.
+    ``step`` takes a list or tuple of actions, one per env, and returns a flat
+    list of ``(observation, reward, terminated, truncated, info)`` tuples.
+    ``action_space.sample()`` returns a tuple in that order.
 
     With ``max_threads=0`` (default), ``step`` runs every env on the calling thread.
     With ``max_threads > 0``, ``step`` distributes envs across up to ``max_threads``
@@ -814,16 +418,6 @@ class GroupEnv:
         return tuple(e.name for e in self._envs)
 
     @property
-    def output_specs(self) -> list[OutputSpec]:
-        """One :class:`OutputSpec` per env instance."""
-        return [e.output_spec for e in self._envs]
-
-    @property
-    def input_specs(self) -> list[InputSpec]:
-        """One :class:`InputSpec` per env instance."""
-        return [e.input_spec for e in self._envs]
-
-    @property
     def action_space(self) -> gym.spaces.Tuple:
         """Gymnasium tuple action space, one subspace per env instance."""
         return gym.spaces.Tuple(tuple(e.action_space for e in self._envs))
@@ -833,36 +427,34 @@ class GroupEnv:
         """Gymnasium tuple observation space, one subspace per env instance."""
         return gym.spaces.Tuple(tuple(e.observation_space for e in self._envs))
 
-    def sample_random_input(self) -> list[dict]:
-        """Sample random inputs for every env instance.
+    def step(
+        self, actions: Sequence[Any]
+    ) -> list[tuple[Any, float, bool, bool, dict[str, Any]]]:
+        """Step all env instances and return one Gymnasium tuple per env.
 
-        Returns a flat ``list[dict]`` — one dict per env. Pass directly to ``step()``.
-        """
-        return [e.sample_random_input() for e in self._envs]
-
-    def step(self, inputs: list[dict]) -> list[dict]:
-        """Step all env instances and return outputs.
-
-        ``inputs[i]`` is the input dict for env instance ``i``. Returns a flat
-        ``list[dict]`` — one output dict per env. On the first call and on any call
-        immediately after an episode ends, the corresponding input is ignored and a
-        reset frame is returned instead.
+        ``actions[i]`` is the action for env instance ``i``. A list or tuple is
+        accepted; ``action_space.sample()`` returns a tuple. Returns a flat
+        list of ``(observation, reward, terminated, truncated, info)``. On the
+        first call and on any call immediately after ``terminated`` or
+        ``truncated``, the corresponding action is ignored and a reset frame
+        is returned instead.
 
         With ``max_threads=0``, steps run sequentially on the calling thread. With
         ``max_threads > 0``, steps are distributed across worker threads; results stay
-        index-aligned with ``inputs``.
+        index-aligned with ``actions``.
         """
-        if not isinstance(inputs, list):
+        if isinstance(actions, (str, bytes)) or not isinstance(actions, (list, tuple)):
             raise ValueError(
-                f"inputs must be a list with one dict per env instance; got {type(inputs).__name__}."
+                "actions must be a list or tuple with one action per env instance; "
+                f"got {type(actions).__name__}."
             )
-        if len(inputs) != self.num_envs:
+        if len(actions) != self.num_envs:
             raise ValueError(
-                f"inputs must contain exactly {self.num_envs} entries, got {len(inputs)}."
+                f"actions must contain exactly {self.num_envs} entries, got {len(actions)}."
             )
         if self._executor is None:
-            return [e.step(inp) for e, inp in zip(self._envs, inputs)]
-        return list(self._executor.map(_step_env, self._envs, inputs))
+            return [e.step(action) for e, action in zip(self._envs, actions)]
+        return list(self._executor.map(_step_env, self._envs, actions))
 
     def render(self) -> list:
         """Return rendered frames from all env instances, flattened into one list."""
@@ -882,6 +474,8 @@ class GroupEnv:
                 self._executor = None
 
 
-def _step_env(env: SingleEnv, inp: dict) -> dict:
+def _step_env(
+    env: SingleEnv, action: Any
+) -> tuple[Any, float, bool, bool, dict[str, Any]]:
     """Step one env; module-level helper for :class:`ThreadPoolExecutor.map`."""
-    return env.step(inp)
+    return env.step(action)

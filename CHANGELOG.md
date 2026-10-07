@@ -7,11 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- The `examples` extra installs Gymnasium's `classic-control` extra
+  (`pygame-ce`, imported as `pygame`) so CartPole can render, installs
+  `repeat-task-gym` from `https://github.com/micahr234/repeat-task-gym`, and
+  `procedural-frozenlake` from `https://github.com/micahr234/procedural-frozenlake`. Notebook
+  [04 — Repeat a task](examples/04_repeat_task_env.ipynb) wraps
+  `Procedural-FrozenLake-v1` in a `RepeatTaskEnv` and passes that env to
+  `make_env` through `env_fn`.
+
+### Changed
+- `step()` takes a Gymnasium action and returns
+  `(observation, reward, terminated, truncated, info)`. `terminated` and
+  `truncated` are the wrapped env's flags as Python bools. The observation
+  and `info` dict are forwarded unchanged. `env.step_index` is `0` on a
+  reset frame. Random actions come from `action_space.sample()`.
+- `EnvConfig.seed_mode` chooses the reset seed. `constant` passes `seed`
+  on every reset. `stream` draws each reset seed from an RNG initialized
+  with `seed`. `none` passes `seed=None`.
+- `EnvConfig.reset_options` is forwarded to every reset mouse-gym issues.
+- `reward_transform` is called with `step_index`, `state`, `action`,
+  `reward`, `terminated`, `truncated`, and `next_state`. `action` is the
+  value passed to `step()`, or `None` on a reset frame.
+- `Metrics` records `episode_cum_rewards` and `episode_lengths` when the
+  wrapped env reports `terminated` or `truncated`. Those flags mean whatever
+  the wrapped env uses them for.
+
 ### Removed
-- ``scripts/worker.sh``. The Cursor My Machines worker script lives
-  only in ``mouse-experiment`` (``scripts/worker.sh`` there still
-  registers sibling ``mouse-core`` / ``mouse-experiment`` /
-  ``mouse-gym`` checkouts).
+- First-reset-only seeding. Example notebook
+  `examples/03_rng_seeding_control.ipynb` is gone; metrics is
+  [03 — Metrics](examples/03_metrics.ipynb) and the repeat-task notebook is
+  [04 — Repeat a task](examples/04_repeat_task_env.ipynb).
+- Dict step I/O: `sample_random_input`, `input_spec`, `output_spec`,
+  `input_specs`, `output_specs`, `FieldSpec`, `InputSpec`, `OutputSpec`,
+  and `StepOutput`.
+- Task grouping: `max_task_episodes`, `terminate_task`, `task_done`,
+  `task_index`, `episode_index`, `episode_done`, `episode_reset_options`,
+  `task_reset_options`, the per-task seed stream, and
+  `Metrics.task_cum_rewards` / `Metrics.task_lengths` (including the
+  matching `GroupMetrics` properties).
 
 ## [1.1.0] - 2026-09-17
 

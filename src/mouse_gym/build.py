@@ -32,9 +32,9 @@ def make_env(config: EnvConfig) -> SingleEnv:
 
     Usage::
 
-        env = make_env(EnvConfig(id="CartPole-v1", seed=0, max_task_episodes=5))
+        env = make_env(EnvConfig(id="CartPole-v1", seed=0))
         for _ in range(1000):
-            output = env.step(env.sample_random_input())
+            env.step(env.action_space.sample())
     """
     return SingleEnv(_make_env_instance(config))
 
@@ -62,12 +62,12 @@ def make_group_env(configs: list[EnvConfig], *, max_threads: int = 0) -> GroupEn
     Usage::
 
         env = make_group_env([
-            EnvConfig(id="CartPole-v1", seed=0, name="cp-0", max_task_episodes=5),
-            EnvConfig(id="CartPole-v1", seed=1, name="cp-1", max_task_episodes=5),
-            EnvConfig(id="MountainCar-v0", seed=2, name="mc-0", max_task_episodes=5),
+            EnvConfig(id="CartPole-v1", seed=0, name="cp-0"),
+            EnvConfig(id="CartPole-v1", seed=1, name="cp-1"),
+            EnvConfig(id="MountainCar-v0", seed=2, name="mc-0"),
         ], max_threads=3)
         for _ in range(1000):
-            outputs = env.step(env.sample_random_input())
+            outputs = env.step(env.action_space.sample())
             cartpole_outs = outputs[:2]
             mountaincar_outs = outputs[2:3]
     """
@@ -84,11 +84,9 @@ def _make_env_instance(config: EnvConfig) -> _EnvInstance:
         env=_make_plain_single_env(config),
         name=name,
         seed=config.seed,
+        seed_mode=config.seed_mode,
         reward_transform=config.reward_transform,
-        episode_reset_options=config.episode_reset_options,
-        task_reset_options=config.task_reset_options,
-        max_task_episodes=config.max_task_episodes,
-        terminate_task=config.terminate_task,
+        reset_options=config.reset_options,
     )
 
 
