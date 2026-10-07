@@ -8,10 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- The `examples` extra installs Gymnasium's `classic-control` extra
-  (`pygame-ce`, imported as `pygame`) so CartPole can render, installs
-  `repeat-task-gym` from `https://github.com/micahr234/repeat-task-gym`, and
-  `procedural-frozenlake` from `https://github.com/micahr234/procedural-frozenlake`. Notebook
+- The `examples` extra installs notebook tools (`jupyter`, `ipykernel`,
+  `matplotlib`), Gymnasium's `classic-control` extra (`pygame-ce`, imported
+  as `pygame`) so CartPole can render, `repeat-task-gym` from
+  `https://github.com/micahr234/repeat-task-gym`, and `procedural-frozenlake`
+  from `https://github.com/micahr234/procedural-frozenlake`. Notebook
   [04 — Repeat a task](examples/04_repeat_task_env.ipynb) wraps
   `Procedural-FrozenLake-v1` in a `RepeatTaskEnv` and passes that env to
   `make_env` through `env_fn`.
@@ -34,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the wrapped env uses them for.
 
 ### Removed
+- `scripts/worker.sh`. The Cursor My Machines worker script lives only in
+  `mouse-experiment` (`scripts/worker.sh` there still registers sibling
+  `mouse-core` / `mouse-experiment` / `mouse-gym` checkouts).
 - First-reset-only seeding. Example notebook
   `examples/03_rng_seeding_control.ipynb` is gone; metrics is
   [03 — Metrics](examples/03_metrics.ipynb) and the repeat-task notebook is

@@ -67,7 +67,7 @@ On top of the standard env API, mouse-gym adds:
 
 ## Examples
 
-The notebooks in [`examples/`](examples/) are the detailed reference for `EnvConfig`, the step return, and day-to-day usage. Install notebook dependencies with `pip install "mouse-gym[examples]"`. That extra installs Gymnasium's classic-control extra (`pygame-ce`) for CartPole rendering, plus `repeat-task-gym` and `procedural-frozenlake` for the repeat-task notebook. Then work through them in order:
+The notebooks in [`examples/`](examples/) are the detailed reference for `EnvConfig`, the step return, and day-to-day usage. Install them with `pip install "mouse-gym[examples]"`. That extra installs Jupyter, ipykernel, and Matplotlib, Gymnasium's classic-control extra (`pygame-ce`) for CartPole rendering, plus `repeat-task-gym` and `procedural-frozenlake` for the repeat-task notebook. Then work through them in order:
 
 **[01 — Random rollout](examples/01_random_rollout.ipynb)** — Start here. Build an env from `EnvConfig`, run the reset-free `step()` loop, and inspect what comes back on each call: an action in, `(observation, reward, terminated, truncated, info)` out, `env.step_index`, and reset frames. Also covers `action_space` / `observation_space` and optional `env_fn` factories.
 
