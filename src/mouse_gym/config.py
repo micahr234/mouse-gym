@@ -18,7 +18,7 @@ class EnvConfig:
             internal ``env.reset`` (the first reset and each autoreset):
             ``"constant"`` passes ``seed`` every time; ``"stream"`` uses
             ``seed`` to start an RNG and draws a new reset seed from it each
-            time; ``"none"`` passes ``None``. Defaults to ``"constant"``.
+            time; ``"none"`` passes ``None``. Defaults to ``"none"``.
         id: Gymnasium env ID (e.g. ``"CartPole-v1"``). Mutually exclusive with
             ``env_fn`` — provide exactly one of ``id`` or ``env_fn``.
         env_fn: Zero-arg factory that returns a freshly built Gymnasium env.
@@ -29,32 +29,34 @@ class EnvConfig:
             and classes only — anonymous ``lambda`` factories require an explicit
             ``name``).
         kwargs: Extra keyword arguments forwarded to ``gymnasium.make`` (``id`` configs only).
+            Pass ``render_mode`` here when the Gymnasium env should render.
         reset_options: Options forwarded to every underlying ``env.reset(options=...)``
             that mouse-gym issues inside ``step()`` (the first reset and each
-            autoreset after ``terminated`` or ``truncated``).
-        render: Enable render mode (``"human"``) for ``id`` configs when not already in
-            ``kwargs``.
+            autoreset after ``terminated`` or ``truncated``). Each reset receives
+            its own deep copy, taken from a snapshot captured when the env is built.
         reward_transform: Optional callable applied to each step reward
             (including reset frames) before it is written to the step output
             and accumulated into episode metrics. Called with ``step_index``,
             ``state``, ``action``, ``reward``, ``terminated``, ``truncated``,
-            and ``next_state``. ``state`` is the observation before the step
-            (``None`` on the first reset); ``next_state`` is the observation
-            after. ``action`` is the value passed to ``step()``, or ``None`` on
-            reset frames. A reset frame is ``step_index == 0`` (``reward`` is
-            ``0.0``, no Gymnasium reward; ``terminated`` and ``truncated`` are
-            false). Accept unused fields with ``**kwargs``. With no transform,
+            and ``next_state``. ``state`` is the observation before the step.
+            On the first reset frame it is the reset observation, because no
+            earlier observation exists. On a later reset frame it is the
+            observation from the previous step. ``next_state`` is the
+            observation after the step. ``action`` is the value passed to
+            ``step()``, or ``None`` on reset frames, where that action is not
+            applied. A reset frame is ``step_index == 0``. Its ``reward`` is
+            ``0.0`` and ``terminated`` and ``truncated`` are false. Accept
+            unused fields with ``**kwargs``. With no transform,
             reset-frame reward is ``0.0``. Defaults to ``None`` (identity on
             env steps).
     """
 
     seed: int | None = None
-    seed_mode: Literal["constant", "stream", "none"] = "constant"
+    seed_mode: Literal["constant", "stream", "none"] = "none"
     id: str | None = None
     name: str | None = None
     kwargs: dict | None = None
     reset_options: dict | None = None
-    render: bool = False
     env_fn: Callable[[], Any] | None = None
     reward_transform: Callable[..., float] | None = None
 
@@ -71,11 +73,6 @@ class EnvConfig:
             raise ValueError(
                 "EnvConfig kwargs only apply to id configs (forwarded to gymnasium.make); "
                 "pass construction arguments inside env_fn instead."
-            )
-        if has_fn and self.render:
-            raise ValueError(
-                "EnvConfig render only applies to id configs; "
-                "set render_mode inside env_fn instead."
             )
         if self.reward_transform is not None and not callable(self.reward_transform):
             raise ValueError(

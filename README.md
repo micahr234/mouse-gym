@@ -40,7 +40,7 @@ source scripts/install.sh
 ```python
 from mouse_gym import EnvConfig, make_env
 
-env = make_env(EnvConfig(id="CartPole-v1", seed=0))
+env = make_env(EnvConfig(id="CartPole-v1"))
 
 for _ in range(1000):
     observation, reward, terminated, truncated, info = env.step(env.action_space.sample())
@@ -51,19 +51,15 @@ env.close()
 
 ## Differences from Gymnasium
 
-**mouse-gym** builds on Gymnasium — you wrap ordinary Gymnasium envs and keep their observations, rewards, and spaces. What's different is the rollout interface:
+**mouse-gym** builds on Gymnasium — you wrap ordinary Gymnasium envs and keep their observations, rewards, and spaces.
 
-- **Reset-free rollouts.** Only call `step()`. `SingleEnv.reset()` is not part of the API. `step(action)` returns Gymnasium's `(observation, reward, terminated, truncated, info)`. The first call is a **reset frame**: initial observation, `env.step_index == 0`, `terminated=False`, `truncated=False`; the action is ignored. After the wrapped env reports `terminated` or `truncated`, the next `step()` is another reset frame. Reset-frame reward comes from `reward_transform` (detect a reset with `step_index == 0`) or `0` if no transform is set. Mouse-gym calls the underlying env's Gymnasium `reset()` internally on that step. The observation and `info` dict are forwarded unchanged.
+- **Reset-free rollouts.** Only call `step()`. `SingleEnv.reset()` is not part of the API. `step(action)` returns Gymnasium's `(observation, reward, terminated, truncated, info)`. The first call is a **reset frame**: initial observation, `env.step_index == 0`, `terminated=False`, `truncated=False`; the action is ignored. After the wrapped env reports `terminated` or `truncated`, the next `step()` is another reset frame. Reset-frame reward comes from `reward_transform` (detect a reset with `step_index == 0`) or `0` if no transform is set. Mouse-gym calls the underlying env's Gymnasium `reset()` internally on that step. The observation and `info` dict are deep-copied before they are returned.
 
-- **Reset seeds.** `seed_mode` chooses the `seed` passed to every internal `reset`. `constant` (default) repeats `seed`. `stream` uses `seed` to start an RNG and draws a new reset seed from it each time. `none` passes `None` (`seed` must be left unset). `reset_options` is forwarded on every reset in all three modes.
+- **Reset seeds.** `seed_mode` chooses the `seed` passed to every internal `reset`. `none` (default) passes `None` (`seed` must be left unset). `constant` repeats `seed`. `stream` uses `seed` to start an RNG and draws a new reset seed from it each time. Each reset receives a deep copy of `reset_options`, taken from a snapshot captured when the env is built.
 
-## Additions to Gymnasium
+- **Metrics on the env.** When `terminated` or `truncated` is true, the return and length are appended to `env.metrics.episode_cum_rewards` and `env.metrics.episode_lengths`. Those flags mean whatever the wrapped env uses them for. `EnvConfig.reward_transform` is applied to each env step and reset-frame reward before it appears in the step output and before those sums are recorded. It receives `step_index`, `state`, `action`, `reward`, `terminated`, `truncated`, and `next_state`. `state` is always an observation: the reset observation on the first reset frame, and the previous observation on later reset frames. Reset-frame `reward` is `0.0`, and `terminated` and `truncated` are false. The recorded return and length are tuples. See [03 — Metrics](examples/03_metrics.ipynb).
 
-On top of the standard env API, mouse-gym adds:
-
-- **Metrics on the env.** When `terminated` or `truncated` is true, the return and length are appended to `env.metrics.episode_cum_rewards` and `env.metrics.episode_lengths`. Those flags mean whatever the wrapped env uses them for. `EnvConfig.reward_transform` is applied to each env step and reset-frame reward before it appears in the step output and before those sums are recorded. It receives `step_index`, `state`, `action`, `reward`, `terminated`, `truncated`, and `next_state`. See [03 — Metrics](examples/03_metrics.ipynb).
-
-- **Grouped envs.** `GroupEnv` steps multiple `SingleEnv` instances in one `step()` call. Pass a list or tuple of actions (`action_space.sample()` returns a tuple) and get back a flat list of `(observation, reward, terminated, truncated, info)` tuples. By default (`max_threads=0`) stepping is sequential on the calling thread; set `max_threads > 0` to distribute envs across that many worker threads. On free-threaded CPython (`3.14t`) those workers can run env steps in parallel. On a GIL-enabled interpreter, cheap Python envs such as CartPole are usually faster with `max_threads=0`. See [02 — Multiple envs](examples/02_multi_env.ipynb). `bench/bench_env.py` times `step` for `SingleEnv` and `GroupEnv` widths.
+- **Grouped envs.** `GroupEnv` steps multiple `SingleEnv` instances in one `step()` call. Pass a list or tuple of actions (`action_space.sample()` returns a tuple) and get back a tuple of `(observation, reward, terminated, truncated, info)` results, one per env. Each `SingleEnv` belongs to one group. By default (`max_threads=0`) stepping is sequential on the calling thread; set `max_threads > 0` to distribute envs across that many worker threads. On free-threaded CPython (`3.14t`) those workers can run env steps in parallel. On a GIL-enabled interpreter, cheap Python envs such as CartPole are usually faster with `max_threads=0`. See [02 — Multiple envs](examples/02_multi_env.ipynb). `bench/bench_env.py` times `step` for `SingleEnv` and `GroupEnv` widths.
 
 ## Examples
 
@@ -71,11 +67,11 @@ The notebooks in [`examples/`](examples/) are the detailed reference for `EnvCon
 
 **[01 — Random rollout](examples/01_random_rollout.ipynb)** — Start here. Build an env from `EnvConfig`, run the reset-free `step()` loop, and inspect what comes back on each call: an action in, `(observation, reward, terminated, truncated, info)` out, `env.step_index`, and reset frames. Also covers `action_space` / `observation_space` and optional `env_fn` factories.
 
-**[02 — Multiple envs](examples/02_multi_env.ipynb)** — Combine several env instances with `make_group_env`. Step heterogeneous envs (different ids, spaces, and seeds) in one loop; optionally parallelize with `max_threads`; pass one action per env and read a flat list of Gymnasium tuples; use `env.names` and each env's spaces.
+**[02 — Multiple envs](examples/02_multi_env.ipynb)** — Combine several env instances with `make_group_env`. Step heterogeneous envs (different ids, spaces, and seeds) in one loop; optionally parallelize with `max_threads`; pass one action per env and read a tuple of Gymnasium results; use `env.names` and each env's spaces.
 
 **[03 — Metrics](examples/03_metrics.ipynb)** — Read returns and lengths from `env.metrics`, clear between eval runs, aggregate stats across a `GroupEnv`, and shape rewards with `reward_transform`.
 
-**[04 — Repeat a task](examples/04_repeat_task_env.ipynb)** — Wrap [Procedural Frozen Lake](https://github.com/micahr234/procedural-frozenlake) in a `RepeatTaskEnv` and pass it through `env_fn`. Episode ends stay in the observation. Gymnasium `terminated` and `truncated` mark the task, which is what `env.metrics` records. `reset_options={"regenerate_map": True}` asks for a new lake when mouse-gym starts the next task.
+**[04 — Repeat a task](examples/04_repeat_task_env.ipynb)** — Wrap [Procedural Frozen Lake](https://github.com/micahr234/procedural-frozenlake) in a `RepeatTaskEnv` and pass it through `env_fn`. Episode ends stay in the observation. Gymnasium `terminated` and `truncated` mark the task, which is what `env.metrics` records. Episode resets pass `regenerate_map: False`. `reset_options={"regenerate_map": True}` asks for a new lake when mouse-gym starts the next task.
 
 ## Contributing
 

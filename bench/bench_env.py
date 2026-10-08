@@ -26,6 +26,7 @@ def _config(i: int) -> EnvConfig:
         id="CartPole-v1",
         name=f"cartpole_{i}",
         seed=i,
+        seed_mode="constant",
     )
 
 

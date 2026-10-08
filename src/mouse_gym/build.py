@@ -32,7 +32,7 @@ def make_env(config: EnvConfig) -> SingleEnv:
 
     Usage::
 
-        env = make_env(EnvConfig(id="CartPole-v1", seed=0))
+        env = make_env(EnvConfig(id="CartPole-v1"))
         for _ in range(1000):
             env.step(env.action_space.sample())
     """
@@ -42,13 +42,13 @@ def make_env(config: EnvConfig) -> SingleEnv:
 def make_group_env(configs: list[EnvConfig], *, max_threads: int = 0) -> GroupEnv:
     """Create a :class:`GroupEnv` from a list of :class:`EnvConfig` objects.
 
-    Each config creates one independent :class:`SingleEnv`. You can also construct
-    :class:`GroupEnv` directly from existing :class:`SingleEnv` instances::
+    Each config creates one independent :class:`SingleEnv`. A :class:`SingleEnv`
+    belongs to at most one :class:`GroupEnv`. You can also construct
+    :class:`GroupEnv` from existing instances::
 
-        env_a = make_env(EnvConfig(id="CartPole-v1", seed=0))
-        env_b = make_env(EnvConfig(id="CartPole-v1", seed=1))
+        env_a = make_env(EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant"))
+        env_b = make_env(EnvConfig(id="CartPole-v1", seed=1, seed_mode="constant"))
         big = GroupEnv([env_a, env_b])
-        sub = GroupEnv([env_a])   # overlapping groups are fine
 
     ``max_threads`` controls how ``GroupEnv.step`` runs constituent envs:
 
@@ -62,9 +62,9 @@ def make_group_env(configs: list[EnvConfig], *, max_threads: int = 0) -> GroupEn
     Usage::
 
         env = make_group_env([
-            EnvConfig(id="CartPole-v1", seed=0, name="cp-0"),
-            EnvConfig(id="CartPole-v1", seed=1, name="cp-1"),
-            EnvConfig(id="MountainCar-v0", seed=2, name="mc-0"),
+            EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant", name="cp-0"),
+            EnvConfig(id="CartPole-v1", seed=1, seed_mode="constant", name="cp-1"),
+            EnvConfig(id="MountainCar-v0", seed=2, seed_mode="constant", name="mc-0"),
         ], max_threads=3)
         for _ in range(1000):
             outputs = env.step(env.action_space.sample())
@@ -95,6 +95,4 @@ def _make_plain_single_env(config: EnvConfig) -> gym.Env:
         return config.env_fn()
     assert config.id is not None
     env_kwargs: dict[str, Any] = dict(config.kwargs or {})
-    if config.render and "render_mode" not in env_kwargs:
-        env_kwargs["render_mode"] = "human"
     return gym.make(config.id, **env_kwargs)

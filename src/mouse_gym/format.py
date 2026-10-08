@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Literal
@@ -10,6 +11,16 @@ import gymnasium as gym
 import numpy as np
 
 _RESET_SEED_BOUND = 2**32
+
+
+def _copy_step_value(value: Any) -> Any:
+    """Return an independent copy of an observation or info dict.
+
+    Some Gymnasium envs reuse one array or dict and overwrite it on the next
+    call. The copy is what ``step`` returns and what the next reward transform
+    sees as ``state``.
+    """
+    return copy.deepcopy(value)
 
 
 class Metrics:
@@ -23,11 +34,11 @@ class Metrics:
     Attributes
     ----------
     episode_cum_rewards:
-        List of cumulative rewards for every episode completed since the last
+        Tuple of cumulative rewards for every episode completed since the last
         :meth:`clear` call. Values use the post-``reward_transform`` rewards,
         including the reset-frame reward (``step_index == 0``).
     episode_lengths:
-        List of episode step counts for every completed episode since the last
+        Tuple of episode step counts for every completed episode since the last
         :meth:`clear` call.
     """
 
@@ -45,14 +56,14 @@ class Metrics:
         self._episode_lengths = []
 
     @property
-    def episode_cum_rewards(self) -> list[float]:
+    def episode_cum_rewards(self) -> tuple[float, ...]:
         """Cumulative rewards for completed episodes."""
-        return self._episode_cum_rewards
+        return tuple(self._episode_cum_rewards)
 
     @property
-    def episode_lengths(self) -> list[float]:
+    def episode_lengths(self) -> tuple[float, ...]:
         """Episode lengths (step counts) for completed episodes."""
-        return self._episode_lengths
+        return tuple(self._episode_lengths)
 
 
 class _EnvInstance:
@@ -85,7 +96,9 @@ class _EnvInstance:
         self._env = env
         self._name = name
         self._reward_transform = reward_transform
-        self._reset_options = dict(reset_options or {})
+        # Snapshot at build time. Nested values are copied too, so later edits
+        # to the caller's dict do not change resets that have already been configured.
+        self._reset_options = copy.deepcopy(reset_options) if reset_options else {}
         self._seed = seed
         self._seed_mode = seed_mode
         self._seed_rng = np.random.default_rng(seed) if seed_mode == "stream" else None
@@ -147,14 +160,22 @@ class _EnvInstance:
 
     def _do_reset(self) -> tuple[tuple[Any, float, bool, bool, dict[str, Any]], None]:
         """Call env.reset() and return the reset-frame tuple; no metric result."""
+        # Fresh copy each reset so the env can mutate this dict without
+        # changing the snapshot used on the next reset.
+        options = copy.deepcopy(self._reset_options) or None
         obs, info = self._env.reset(
             seed=self._next_reset_seed(),
-            options=dict(self._reset_options) or None,
+            options=options,
         )
+        obs = _copy_step_value(obs)
+        info = _copy_step_value(info)
         self._step_index = 0
+        # The first reset has no earlier observation, so its state is the
+        # reset observation. Later resets pass the observation we were holding.
+        state = obs if self._state is None else self._state
         reward_f = self._apply_reward_transform(
             step_index=0,
-            state=self._state,
+            state=state,
             action=None,
             reward=0.0,
             terminated=False,
@@ -184,6 +205,8 @@ class _EnvInstance:
             return self._do_reset()
 
         obs, raw_reward, terminated, truncated, info = self._env.step(action)
+        obs = _copy_step_value(obs)
+        info = _copy_step_value(info)
         terminated = bool(terminated)
         truncated = bool(truncated)
 
@@ -211,14 +234,9 @@ class _EnvInstance:
 
         return (obs, reward_f, terminated, truncated, info), episode_result
 
-    def render(self) -> list:
-        """Return rendered frames from this env instance."""
-        frames = self._env.render()
-        if frames is None:
-            return []
-        if isinstance(frames, (list, tuple)):
-            return list(frames)
-        return [frames]
+    def render(self) -> Any:
+        """Return whatever the wrapped env's ``render()`` returns."""
+        return self._env.render()
 
     def close(self) -> None:
         self._env.close()
@@ -238,7 +256,8 @@ class SingleEnv:
     ``step(action)`` returns Gymnasium's ``(observation, reward, terminated,
     truncated, info)``. ``reward`` is a Python ``float`` after
     ``reward_transform``. ``terminated`` and ``truncated`` are Python ``bool``s.
-    The observation and ``info`` dict are forwarded unchanged. Read
+    The observation and ``info`` dict are deep-copied before they are returned.
+    Read
     :attr:`step_index` for the count since the last mouse-gym reset (``0`` on a
     reset frame).
 
@@ -250,6 +269,7 @@ class SingleEnv:
     def __init__(self, env_instance: _EnvInstance) -> None:
         self._env_instance = env_instance
         self._metrics = Metrics()
+        self._group: GroupEnv | None = None
 
     @property
     def metrics(self) -> Metrics:
@@ -302,8 +322,8 @@ class SingleEnv:
             self._metrics._record(cum_reward, length)
         return output
 
-    def render(self) -> list:
-        """Return rendered frames from this env instance."""
+    def render(self) -> Any:
+        """Return whatever the wrapped env's ``render()`` returns."""
         return self._env_instance.render()
 
     def close(self) -> None:
@@ -315,31 +335,30 @@ class GroupMetrics:
     """Live read-through view over :class:`Metrics` instances of a :class:`GroupEnv`.
 
     Stores no episode data of its own — all reads delegate to each constituent
-    :class:`SingleEnv`'s metrics. Multiple :class:`GroupEnv` instances may point
-    to overlapping sets of :class:`SingleEnv` objects without any data conflicts.
+    :class:`SingleEnv`'s metrics.
 
     Attributes
     ----------
     episode_cum_rewards:
-        Per-env list of cumulative rewards. ``episode_cum_rewards[i]`` is the
-        list from ``envs[i].metrics.episode_cum_rewards``.
+        Per-env tuple of cumulative rewards. ``episode_cum_rewards[i]`` is
+        ``envs[i].metrics.episode_cum_rewards``.
     episode_lengths:
-        Per-env list of episode step counts. ``episode_lengths[i]`` is the list
-        from ``envs[i].metrics.episode_lengths``.
+        Per-env tuple of episode step counts. ``episode_lengths[i]`` is
+        ``envs[i].metrics.episode_lengths``.
     """
 
     def __init__(self, envs: list[SingleEnv]) -> None:
         self._envs = envs
 
     @property
-    def episode_cum_rewards(self) -> list[list[float]]:
+    def episode_cum_rewards(self) -> tuple[tuple[float, ...], ...]:
         """Per-env cumulative rewards, read live from each env's metrics."""
-        return [e.metrics.episode_cum_rewards for e in self._envs]
+        return tuple(e.metrics.episode_cum_rewards for e in self._envs)
 
     @property
-    def episode_lengths(self) -> list[list[float]]:
+    def episode_lengths(self) -> tuple[tuple[float, ...], ...]:
         """Per-env episode lengths, read live from each env's metrics."""
-        return [e.metrics.episode_lengths for e in self._envs]
+        return tuple(e.metrics.episode_lengths for e in self._envs)
 
     def clear(self) -> None:
         """Clear metrics on every constituent env."""
@@ -348,27 +367,23 @@ class GroupMetrics:
 
 
 class GroupEnv:
-    """A pure reference container that delegates to a list of :class:`SingleEnv` instances.
+    """A container that steps a fixed sequence of :class:`SingleEnv` instances.
 
     Construct via :func:`mouse_gym.make_group_env` or directly:
     ``GroupEnv([env_a, env_b, env_c], max_threads=4)``.
 
-    ``GroupEnv`` stores no episode data. Multiple ``GroupEnv`` instances — including
-    overlapping ones — can point to the same :class:`SingleEnv` objects without conflict
-    when stepped sequentially::
+    Each :class:`SingleEnv` belongs to at most one :class:`GroupEnv`. Membership
+    is fixed at construction.
 
-        big = GroupEnv([env_a, env_b, env_c])
-        sub = GroupEnv([env_a, env_b])   # shares env_a and env_b with big — fine
+    ``GroupEnv`` stores no episode data. Each :class:`SingleEnv` owns its own
+    :class:`Metrics`; ``GroupEnv.metrics`` is a live read-through view with no
+    independent storage.
 
-    Do not step the same :class:`SingleEnv` concurrently (for example via overlapping
-    groups with ``max_threads > 0``).
-
-    Each :class:`SingleEnv` owns its own :class:`Metrics`; ``GroupEnv.metrics``
-    is a live read-through view with no independent storage.
-
-    ``step`` takes a list or tuple of actions, one per env, and returns a flat
-    list of ``(observation, reward, terminated, truncated, info)`` tuples.
-    ``action_space.sample()`` returns a tuple in that order.
+    ``step`` takes a list or tuple of actions, one per env, and returns a tuple
+    of ``(observation, reward, terminated, truncated, info)`` results.
+    ``action_space.sample()`` returns a tuple in that order. Heterogeneous
+    action spaces stay a sequence of per-env actions, because one array cannot
+    hold them.
 
     With ``max_threads=0`` (default), ``step`` runs every env on the calling thread.
     With ``max_threads > 0``, ``step`` distributes envs across up to ``max_threads``
@@ -378,14 +393,33 @@ class GroupEnv:
     faster with ``max_threads=0``.
     """
 
-    def __init__(self, envs: list[SingleEnv], *, max_threads: int = 0) -> None:
+    def __init__(self, envs: Sequence[SingleEnv], *, max_threads: int = 0) -> None:
+        if isinstance(envs, (str, bytes)) or not isinstance(envs, Sequence):
+            raise ValueError(
+                "envs must be a sequence of SingleEnv instances; "
+                f"got {type(envs).__name__}."
+            )
         if not envs:
             raise ValueError("GroupEnv requires at least one SingleEnv.")
         if max_threads < 0:
             raise ValueError(f"max_threads must be >= 0; got {max_threads}.")
+        if len({id(env) for env in envs}) != len(envs):
+            raise ValueError("GroupEnv envs must be unique; pass each SingleEnv once.")
+        for env in envs:
+            if env._group is not None:
+                raise ValueError(
+                    f"{env.name!r} is already in a GroupEnv. "
+                    "Each SingleEnv belongs to at most one group."
+                )
         self._envs = list(envs)
+        for env in self._envs:
+            env._group = self
         self._metrics = GroupMetrics(self._envs)
         self._max_threads = max_threads
+        self._action_space = gym.spaces.Tuple(tuple(env.action_space for env in self._envs))
+        self._observation_space = gym.spaces.Tuple(
+            tuple(env.observation_space for env in self._envs)
+        )
         self._executor: ThreadPoolExecutor | None = None
         if max_threads > 0:
             self._executor = ThreadPoolExecutor(
@@ -393,9 +427,9 @@ class GroupEnv:
             )
 
     @property
-    def envs(self) -> list[SingleEnv]:
-        """The constituent :class:`SingleEnv` instances."""
-        return self._envs
+    def envs(self) -> tuple[SingleEnv, ...]:
+        """The constituent :class:`SingleEnv` instances, in construction order."""
+        return tuple(self._envs)
 
     @property
     def metrics(self) -> GroupMetrics:
@@ -419,22 +453,28 @@ class GroupEnv:
 
     @property
     def action_space(self) -> gym.spaces.Tuple:
-        """Gymnasium tuple action space, one subspace per env instance."""
-        return gym.spaces.Tuple(tuple(e.action_space for e in self._envs))
+        """Gymnasium tuple action space, one subspace per env instance.
+
+        Built once, when the group is created.
+        """
+        return self._action_space
 
     @property
     def observation_space(self) -> gym.spaces.Tuple:
-        """Gymnasium tuple observation space, one subspace per env instance."""
-        return gym.spaces.Tuple(tuple(e.observation_space for e in self._envs))
+        """Gymnasium tuple observation space, one subspace per env instance.
+
+        Built once, when the group is created.
+        """
+        return self._observation_space
 
     def step(
         self, actions: Sequence[Any]
-    ) -> list[tuple[Any, float, bool, bool, dict[str, Any]]]:
+    ) -> tuple[tuple[Any, float, bool, bool, dict[str, Any]], ...]:
         """Step all env instances and return one Gymnasium tuple per env.
 
         ``actions[i]`` is the action for env instance ``i``. A list or tuple is
-        accepted; ``action_space.sample()`` returns a tuple. Returns a flat
-        list of ``(observation, reward, terminated, truncated, info)``. On the
+        accepted; ``action_space.sample()`` returns a tuple. Returns a tuple of
+        ``(observation, reward, terminated, truncated, info)``. On the
         first call and on any call immediately after ``terminated`` or
         ``truncated``, the corresponding action is ignored and a reset frame
         is returned instead.
@@ -453,15 +493,12 @@ class GroupEnv:
                 f"actions must contain exactly {self.num_envs} entries, got {len(actions)}."
             )
         if self._executor is None:
-            return [e.step(action) for e, action in zip(self._envs, actions)]
-        return list(self._executor.map(_step_env, self._envs, actions))
+            return tuple(e.step(action) for e, action in zip(self._envs, actions))
+        return tuple(self._executor.map(_step_env, self._envs, actions))
 
-    def render(self) -> list:
-        """Return rendered frames from all env instances, flattened into one list."""
-        frames: list = []
-        for e in self._envs:
-            frames.extend(e.render())
-        return frames
+    def render(self) -> tuple[Any, ...]:
+        """Return each env's ``render()`` result, in env order."""
+        return tuple(e.render() for e in self._envs)
 
     def close(self) -> None:
         """Close all env instances and shut down any worker threads."""

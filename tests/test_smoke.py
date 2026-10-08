@@ -8,7 +8,7 @@ import gymnasium as gym
 import numpy as np
 import pytest
 
-from mouse_gym import EnvConfig, Metrics, make_env, make_group_env
+from mouse_gym import EnvConfig, GroupEnv, Metrics, make_env, make_group_env
 
 
 def _rollout(env, steps: int = 5) -> list:
@@ -29,7 +29,7 @@ def _rollout_single(env, steps: int = 5) -> tuple:
 
 def test_cartpole_step_contract() -> None:
     cfgs = [
-        EnvConfig(id="CartPole-v1", name=f"train-cartpole_{i}", seed=i)
+        EnvConfig(id="CartPole-v1", name=f"train-cartpole_{i}", seed=i, seed_mode="constant")
         for i in range(3)
     ]
     env = make_group_env(cfgs)
@@ -53,8 +53,8 @@ def test_cartpole_step_contract() -> None:
 def test_group_env_exposes_gym_tuple_spaces() -> None:
     env = make_group_env(
         [
-            EnvConfig(id="CartPole-v1", seed=0),
-            EnvConfig(id="CartPole-v1", seed=1),
+            EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant"),
+            EnvConfig(id="CartPole-v1", seed=1, seed_mode="constant"),
         ]
     )
     try:
@@ -72,8 +72,8 @@ def test_group_env_exposes_gym_tuple_spaces() -> None:
 def test_pendulum_continuous_step_contract() -> None:
     env = make_group_env(
         [
-            EnvConfig(id="Pendulum-v1", seed=0),
-            EnvConfig(id="Pendulum-v1", seed=1),
+            EnvConfig(id="Pendulum-v1", seed=0, seed_mode="constant"),
+            EnvConfig(id="Pendulum-v1", seed=1, seed_mode="constant"),
         ]
     )
     try:
@@ -93,7 +93,10 @@ def test_pendulum_continuous_step_contract() -> None:
 
 def test_group_env_rejects_wrong_action_count() -> None:
     env = make_group_env(
-        [EnvConfig(id="CartPole-v1", seed=0), EnvConfig(id="CartPole-v1", seed=1)]
+        [
+            EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant"),
+            EnvConfig(id="CartPole-v1", seed=1, seed_mode="constant"),
+        ]
     )
     try:
         env.step(env.action_space.sample())
@@ -106,7 +109,7 @@ def test_group_env_rejects_wrong_action_count() -> None:
 
 
 def test_single_env_reset_is_not_implemented() -> None:
-    env = make_env(EnvConfig(id="CartPole-v1", seed=0))
+    env = make_env(EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant"))
     try:
         with pytest.raises(NotImplementedError, match="does not support public reset"):
             env.reset()
@@ -138,7 +141,7 @@ def test_dict_obs_dtype_follows_space_not_key_name() -> None:
                 {},
             )
 
-    env = make_env(EnvConfig(seed=0, env_fn=DictObsEnv))
+    env = make_env(EnvConfig(seed=0, seed_mode="constant", env_fn=DictObsEnv))
     try:
         observation, _reward, _terminated, _truncated, _info = _rollout_single(env, steps=2)
         assert isinstance(observation, dict)
@@ -161,7 +164,7 @@ def test_info_keys_passthrough() -> None:
         def step(self, action):
             return 1, 0.0, False, False, {"foo": 2, "q_star": np.array([0.0, 1.0], dtype=np.float64)}
 
-    env = make_env(EnvConfig(seed=0, env_fn=InfoEmittingEnv))
+    env = make_env(EnvConfig(seed=0, seed_mode="constant", env_fn=InfoEmittingEnv))
     try:
         _obs, _reward, _terminated, _truncated, reset_info = env.step(env.action_space.sample())
         _obs, _reward, _terminated, _truncated, step_info = env.step(env.action_space.sample())
@@ -175,7 +178,7 @@ def test_info_keys_passthrough() -> None:
 
 def test_same_seed_repeats_first_observation() -> None:
     def _first_obs(*, seed: int) -> np.ndarray:
-        env = make_env(EnvConfig(id="CartPole-v1", seed=seed))
+        env = make_env(EnvConfig(id="CartPole-v1", seed=seed, seed_mode="constant"))
         try:
             observation, *_rest = env.step(env.action_space.sample())
             return observation
@@ -221,7 +224,14 @@ def _reset_frames(env, *, steps: int) -> list[tuple]:
 
 
 def test_seed_is_forwarded_on_every_reset() -> None:
-    env = make_env(EnvConfig(env_fn=_ProceduralEnv, seed=7, reset_options={"mode": "keep"}))
+    env = make_env(
+        EnvConfig(
+            env_fn=_ProceduralEnv,
+            seed=7,
+            seed_mode="constant",
+            reset_options={"mode": "keep"},
+        )
+    )
     try:
         frames = _reset_frames(env, steps=8)
         inner = cast(_ProceduralEnv, env._env_instance._env.unwrapped)
@@ -245,6 +255,41 @@ def _received_seeds(env) -> list[int | None]:
     return list(inner.received_seeds)
 
 
+def test_reset_options_nested_mutation_stays_on_that_reset() -> None:
+    class MutatingOptionsEnv(gym.Env):
+        observation_space = gym.spaces.Discrete(1)
+        action_space = gym.spaces.Discrete(2)
+
+        def __init__(self) -> None:
+            self.seen: list[tuple[bool, list[str]]] = []
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            assert isinstance(options, dict)
+            self.seen.append((options["nested"]["flag"], list(options["tags"])))
+            options["nested"]["flag"] = True
+            options["tags"].append("mutated")
+            return 0, {}
+
+        def step(self, action):
+            return 0, 0.0, True, False, {}
+
+    options = {"nested": {"flag": False}, "tags": ["a"]}
+    env = make_env(EnvConfig(env_fn=MutatingOptionsEnv, name="opts", reset_options=options))
+    try:
+        for _ in range(5):
+            env.step(0)
+        options["nested"]["flag"] = True
+        options["tags"].append("caller")
+        env.step(0)
+        env.step(0)
+        inner = cast(MutatingOptionsEnv, env._env_instance._env.unwrapped)
+        assert inner.seen == [(False, ["a"])] * 4
+        assert options == {"nested": {"flag": True}, "tags": ["a", "caller"]}
+    finally:
+        env.close()
+
+
 def test_stream_draws_reset_seeds_from_the_initializer() -> None:
     def _seeds(seed: int) -> list[int | None]:
         env = make_env(EnvConfig(env_fn=_ProceduralEnv, seed=seed, seed_mode="stream"))
@@ -262,8 +307,9 @@ def test_stream_draws_reset_seeds_from_the_initializer() -> None:
     assert all(isinstance(seed, int) and seed >= 0 for seed in same_a)
 
 
-def test_none_seed_mode_passes_none() -> None:
-    env = make_env(EnvConfig(env_fn=_ProceduralEnv, seed_mode="none"))
+def test_default_seed_mode_passes_none() -> None:
+    assert EnvConfig(id="CartPole-v1").seed_mode == "none"
+    env = make_env(EnvConfig(env_fn=_ProceduralEnv))
     try:
         seeds = _received_seeds(env)
         assert seeds == [None] * len(seeds)
@@ -277,6 +323,8 @@ def test_seed_mode_rejects_mismatched_seed() -> None:
     with pytest.raises(ValueError, match="must be an int"):
         EnvConfig(id="CartPole-v1", seed_mode="stream")
     with pytest.raises(ValueError, match="must be None"):
+        EnvConfig(id="CartPole-v1", seed=1)
+    with pytest.raises(ValueError, match="must be None"):
         EnvConfig(id="CartPole-v1", seed=1, seed_mode="none")
     with pytest.raises(ValueError, match="seed_mode"):
         EnvConfig(id="CartPole-v1", seed=1, seed_mode=cast(Any, "fixed"))
@@ -284,7 +332,7 @@ def test_seed_mode_rejects_mismatched_seed() -> None:
 
 def test_first_reset_map_is_deterministic() -> None:
     def _first_map(*, seed: int) -> np.ndarray:
-        env = make_env(EnvConfig(env_fn=_ProceduralEnv, seed=seed))
+        env = make_env(EnvConfig(env_fn=_ProceduralEnv, seed=seed, seed_mode="constant"))
         try:
             _obs, _reward, _terminated, _truncated, info = env.step(env.action_space.sample())
             return info["map"]
@@ -297,7 +345,7 @@ def test_first_reset_map_is_deterministic() -> None:
 
 def test_autoreset_frame_reward_defaults_to_zero() -> None:
     env = make_env(
-        EnvConfig(id="CartPole-v1", seed=0, kwargs={"max_episode_steps": 8})
+        EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant", kwargs={"max_episode_steps": 8})
     )
     try:
         (_obs, reward, terminated, truncated, _info), _step = _roll_until_autoreset(env)
@@ -314,14 +362,14 @@ def test_initial_reset_frame_reward_from_transform() -> None:
     def transform(*, step_index: int, reward: float, **_kwargs: object) -> float:
         return -1.0 if step_index == 0 else reward
 
-    env = make_env(EnvConfig(id="CartPole-v1", seed=0, reward_transform=transform))
+    env = make_env(EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant", reward_transform=transform))
     try:
         _obs, reward, terminated, truncated, _info = env.step(env.action_space.sample())
         assert env.step_index == 0
         assert reward == -1.0
         assert terminated is False
         assert truncated is False
-        assert env.metrics.episode_cum_rewards == []
+        assert env.metrics.episode_cum_rewards == ()
     finally:
         env.close()
 
@@ -344,7 +392,7 @@ def test_reset_frame_contract() -> None:
         )
 
     cfgs = [
-        EnvConfig(name=f"CartPole-custom_{i}", seed=i, env_fn=make_cartpole)
+        EnvConfig(name=f"CartPole-custom_{i}", seed=i, seed_mode="constant", env_fn=make_cartpole)
         for i in range(2)
     ]
     env = make_group_env(cfgs)
@@ -370,7 +418,7 @@ def test_box_observation_preserves_native_uint8_dtype() -> None:
         def step(self, action):
             return np.full((2, 3), 9, dtype=np.uint8), 1.0, False, False, {}
 
-    env = make_env(EnvConfig(seed=0, env_fn=Uint8ImageEnv))
+    env = make_env(EnvConfig(seed=0, seed_mode="constant", env_fn=Uint8ImageEnv))
     try:
         observation, _reward, _terminated, _truncated, _info = _rollout_single(env, steps=2)
         assert observation.dtype == np.uint8
@@ -395,7 +443,7 @@ def test_box_action_is_forwarded_unchanged() -> None:
             self.last_action = action
             return np.zeros(1, dtype=np.float32), 0.0, False, False, {}
 
-    env = make_env(EnvConfig(seed=0, env_fn=Float64ActionEnv))
+    env = make_env(EnvConfig(seed=0, seed_mode="constant", env_fn=Float64ActionEnv))
     try:
         sampled = env.action_space.sample()
         assert sampled.dtype == np.float64
@@ -434,14 +482,14 @@ class BothFlagsEnv(gym.Env):
 
 
 def test_gym_flags_pass_through_together() -> None:
-    env = make_env(EnvConfig(seed=0, env_fn=BothFlagsEnv))
+    env = make_env(EnvConfig(seed=0, seed_mode="constant", env_fn=BothFlagsEnv))
     try:
         env.step(env.action_space.sample())
         _obs, _reward, terminated, truncated, _info = env.step(env.action_space.sample())
         assert terminated is True
         assert truncated is True
-        assert env.metrics.episode_cum_rewards == [1.0]
-        assert env.metrics.episode_lengths == [1.0]
+        assert env.metrics.episode_cum_rewards == (1.0,)
+        assert env.metrics.episode_lengths == (1.0,)
     finally:
         env.close()
 
@@ -450,6 +498,7 @@ def test_reward_transform_applies_before_metrics() -> None:
     env = make_env(
         EnvConfig(
             seed=0,
+            seed_mode="constant",
             env_fn=ImmediateTerminateEnv,
             reward_transform=lambda reward, **_kwargs: reward * 10.0,
         )
@@ -459,7 +508,7 @@ def test_reward_transform_applies_before_metrics() -> None:
         assert reward == 0.0
         _obs, reward, _terminated, _truncated, _info = env.step(env.action_space.sample())
         assert reward == 10.0
-        assert env.metrics.episode_cum_rewards == [10.0]
+        assert env.metrics.episode_cum_rewards == (10.0,)
         assert not hasattr(env.metrics, "task_cum_rewards")
     finally:
         env.close()
@@ -485,15 +534,16 @@ def test_reward_transform_receives_transition_kwargs() -> None:
         seen.append(dict(kwargs))
         return float(kwargs["reward"])
 
-    env = make_env(EnvConfig(seed=0, env_fn=TwoStepEnv, reward_transform=transform))
+    env = make_env(EnvConfig(seed=0, seed_mode="constant", env_fn=TwoStepEnv, reward_transform=transform))
     try:
         env.step(0)
         env.step(1)
         env.step(0)
+        env.step(0)
     finally:
         env.close()
 
-    assert len(seen) == 3
+    assert len(seen) == 4
     assert set(seen[0]) == {
         "step_index",
         "state",
@@ -504,7 +554,7 @@ def test_reward_transform_receives_transition_kwargs() -> None:
         "next_state",
     }
     assert seen[0]["step_index"] == 0
-    assert seen[0]["state"] is None
+    assert seen[0]["state"] == 0
     assert seen[0]["action"] is None
     assert seen[0]["reward"] == 0.0
     assert seen[0]["terminated"] is False
@@ -524,6 +574,13 @@ def test_reward_transform_receives_transition_kwargs() -> None:
     assert seen[2]["reward"] == 2.0
     assert seen[2]["terminated"] is True
     assert seen[2]["truncated"] is False
+    assert seen[3]["step_index"] == 0
+    assert seen[3]["state"] == 2
+    assert seen[3]["next_state"] == 0
+    assert seen[3]["reward"] == 0.0
+    assert seen[3]["terminated"] is False
+    assert seen[3]["truncated"] is False
+    assert seen[3]["action"] is None
 
 
 def test_reward_transform_accepts_kwargs_function() -> None:
@@ -531,13 +588,13 @@ def test_reward_transform_accepts_kwargs_function() -> None:
         return reward * 10.0
 
     env = make_env(
-        EnvConfig(seed=0, env_fn=ImmediateTerminateEnv, reward_transform=scale)
+        EnvConfig(seed=0, seed_mode="constant", env_fn=ImmediateTerminateEnv, reward_transform=scale)
     )
     try:
         env.step(env.action_space.sample())
         _obs, reward, _terminated, _truncated, _info = env.step(env.action_space.sample())
         assert reward == 10.0
-        assert env.metrics.episode_cum_rewards == [10.0]
+        assert env.metrics.episode_cum_rewards == (10.0,)
     finally:
         env.close()
 
@@ -547,16 +604,16 @@ def test_reset_frame_reward_from_transform_is_in_metrics() -> None:
         return -1.0 if step_index == 0 else reward * 10.0
 
     env = make_env(
-        EnvConfig(seed=0, env_fn=ImmediateTerminateEnv, reward_transform=transform)
+        EnvConfig(seed=0, seed_mode="constant", env_fn=ImmediateTerminateEnv, reward_transform=transform)
     )
     try:
         _obs, reward, _terminated, _truncated, _info = env.step(env.action_space.sample())
         assert reward == -1.0
-        assert env.metrics.episode_cum_rewards == []
+        assert env.metrics.episode_cum_rewards == ()
         _obs, reward, _terminated, _truncated, _info = env.step(env.action_space.sample())
         assert reward == 10.0
-        assert env.metrics.episode_cum_rewards == [9.0]
-        assert env.metrics.episode_lengths == [1.0]
+        assert env.metrics.episode_cum_rewards == (9.0,)
+        assert env.metrics.episode_lengths == (1.0,)
     finally:
         env.close()
 
@@ -566,7 +623,7 @@ def test_later_reset_frames_use_the_same_transform() -> None:
         return -1.0 if step_index == 0 else reward
 
     env = make_env(
-        EnvConfig(seed=0, env_fn=ImmediateTerminateEnv, reward_transform=transform)
+        EnvConfig(seed=0, seed_mode="constant", env_fn=ImmediateTerminateEnv, reward_transform=transform)
     )
     try:
         _obs, reward, _terminated, _truncated, _info = env.step(env.action_space.sample())
@@ -582,12 +639,12 @@ def test_later_reset_frames_use_the_same_transform() -> None:
 
 def test_env_config_rejects_non_callable_reward_transform() -> None:
     with pytest.raises(ValueError, match="reward_transform"):
-        EnvConfig(id="CartPole-v1", seed=0, reward_transform=cast(Any, 2.0))
+        EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant", reward_transform=cast(Any, 2.0))
 
 
 def test_step_index_resets_after_gym_done() -> None:
     env = make_env(
-        EnvConfig(id="CartPole-v1", seed=0, kwargs={"max_episode_steps": 8})
+        EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant", kwargs={"max_episode_steps": 8})
     )
     try:
         _obs, _reward, terminated, truncated, _info = env.step(env.action_space.sample())
@@ -646,17 +703,17 @@ def test_observation_episode_flags_do_not_end_the_segment() -> None:
                 "episode_truncated": False,
             }
 
-    env = make_env(EnvConfig(seed=0, env_fn=FlagInObsEnv))
+    env = make_env(EnvConfig(seed=0, seed_mode="constant", env_fn=FlagInObsEnv))
     try:
         observation, _reward, terminated, _truncated, _info = env.step(0)
         assert env.step_index == 0
-        assert env.metrics.episode_cum_rewards == []
+        assert env.metrics.episode_cum_rewards == ()
 
         observation, _reward, terminated, _truncated, _info = env.step(0)
         assert bool(observation["episode_terminated"]) is True
         assert terminated is False
         assert env.step_index == 1
-        assert env.metrics.episode_cum_rewards == []
+        assert env.metrics.episode_cum_rewards == ()
 
         observation, _reward, _terminated, _truncated, _info = env.step(0)
         assert env.step_index == 2
@@ -665,8 +722,8 @@ def test_observation_episode_flags_do_not_end_the_segment() -> None:
         _observation, _reward, terminated, _truncated, _info = env.step(0)
         assert terminated is True
         assert env.step_index == 3
-        assert env.metrics.episode_cum_rewards == [3.0]
-        assert env.metrics.episode_lengths == [3.0]
+        assert env.metrics.episode_cum_rewards == (3.0,)
+        assert env.metrics.episode_lengths == (3.0,)
 
         _observation, _reward, terminated, _truncated, _info = env.step(0)
         assert env.step_index == 0
@@ -679,12 +736,12 @@ def test_observation_episode_flags_do_not_end_the_segment() -> None:
 
 def test_env_config_rejects_id_and_env_fn() -> None:
     with pytest.raises(ValueError, match="not both"):
-        EnvConfig(id="CartPole-v1", seed=0, env_fn=lambda: gym.make("CartPole-v1"))
+        EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant", env_fn=lambda: gym.make("CartPole-v1"))
 
 
 def test_env_config_requires_id_or_env_fn() -> None:
     with pytest.raises(ValueError, match="at least one"):
-        EnvConfig(seed=0)
+        EnvConfig(seed=0, seed_mode="constant")
 
 
 def test_env_config_rejects_kwargs_with_env_fn() -> None:
@@ -692,15 +749,7 @@ def test_env_config_rejects_kwargs_with_env_fn() -> None:
         return gym.make("CartPole-v1")
 
     with pytest.raises(ValueError, match="kwargs only apply to id configs"):
-        EnvConfig(seed=0, env_fn=make_cartpole, kwargs={"max_episode_steps": 5})
-
-
-def test_env_config_rejects_render_with_env_fn() -> None:
-    def make_cartpole() -> gym.Env:
-        return gym.make("CartPole-v1")
-
-    with pytest.raises(ValueError, match="render only applies to id configs"):
-        EnvConfig(seed=0, env_fn=make_cartpole, render=True)
+        EnvConfig(seed=0, seed_mode="constant", env_fn=make_cartpole, kwargs={"max_episode_steps": 5})
 
 
 def test_env_fn_default_name_from_callable() -> None:
@@ -715,7 +764,7 @@ def test_env_fn_default_name_from_callable() -> None:
         def step(self, action):
             return 0, 0.0, True, False, {}
 
-    env = make_env(EnvConfig(seed=0, env_fn=NamedEnv))
+    env = make_env(EnvConfig(seed=0, seed_mode="constant", env_fn=NamedEnv))
     try:
         assert env.name == "NamedEnv"
     finally:
@@ -724,17 +773,17 @@ def test_env_fn_default_name_from_callable() -> None:
 
 def test_anonymous_env_fn_requires_name() -> None:
     with pytest.raises(ValueError, match="anonymous callable"):
-        make_env(EnvConfig(seed=0, env_fn=lambda: gym.make("CartPole-v1")))
+        make_env(EnvConfig(seed=0, seed_mode="constant", env_fn=lambda: gym.make("CartPole-v1")))
 
 
 def test_metrics_accumulates_and_clears() -> None:
     env = make_env(
-        EnvConfig(id="CartPole-v1", seed=0, kwargs={"max_episode_steps": 10})
+        EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant", kwargs={"max_episode_steps": 10})
     )
     try:
         assert isinstance(env.metrics, Metrics)
-        assert env.metrics.episode_cum_rewards == []
-        assert env.metrics.episode_lengths == []
+        assert env.metrics.episode_cum_rewards == ()
+        assert env.metrics.episode_lengths == ()
         assert not hasattr(env.metrics, "task_cum_rewards")
         assert not hasattr(env.metrics, "task_lengths")
 
@@ -753,14 +802,14 @@ def test_metrics_accumulates_and_clears() -> None:
         assert all(isinstance(length, float) for length in lengths)
 
         env.metrics.clear()
-        assert env.metrics.episode_cum_rewards == []
-        assert env.metrics.episode_lengths == []
+        assert env.metrics.episode_cum_rewards == ()
+        assert env.metrics.episode_lengths == ()
     finally:
         env.close()
 
 
 def test_group_env_max_threads_default_is_main_thread() -> None:
-    env = make_group_env([EnvConfig(id="CartPole-v1", seed=i) for i in range(3)])
+    env = make_group_env([EnvConfig(id="CartPole-v1", seed=i, seed_mode="constant") for i in range(3)])
     try:
         assert env.max_threads == 0
         outputs = _rollout(env, steps=3)
@@ -772,7 +821,7 @@ def test_group_env_max_threads_default_is_main_thread() -> None:
 
 def test_group_env_max_threads_distributes_steps() -> None:
     env = make_group_env(
-        [EnvConfig(id="CartPole-v1", seed=i, name=f"cp-{i}") for i in range(4)],
+        [EnvConfig(id="CartPole-v1", seed=i, seed_mode="constant", name=f"cp-{i}") for i in range(4)],
         max_threads=2,
     )
     try:
@@ -792,7 +841,7 @@ def test_group_env_max_threads_distributes_steps() -> None:
 def test_group_env_max_threads_matches_sequential_contract() -> None:
     """Threaded and sequential groups with the same seeds produce matching trajectories."""
     cfgs = [
-        EnvConfig(id="CartPole-v1", seed=i, kwargs={"max_episode_steps": 8})
+        EnvConfig(id="CartPole-v1", seed=i, seed_mode="constant", kwargs={"max_episode_steps": 8})
         for i in range(3)
     ]
     sequential = make_group_env(cfgs, max_threads=0)
@@ -816,4 +865,90 @@ def test_group_env_max_threads_matches_sequential_contract() -> None:
 
 def test_group_env_rejects_negative_max_threads() -> None:
     with pytest.raises(ValueError, match="max_threads"):
-        make_group_env([EnvConfig(id="CartPole-v1", seed=0)], max_threads=-1)
+        make_group_env([EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant")], max_threads=-1)
+
+
+def test_group_env_rejects_shared_or_repeated_envs() -> None:
+    env_a = make_env(EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant", name="a"))
+    env_b = make_env(EnvConfig(id="CartPole-v1", seed=1, seed_mode="constant", name="b"))
+    fresh = make_env(EnvConfig(id="CartPole-v1", seed=2, seed_mode="constant", name="fresh"))
+    group = GroupEnv([env_a, env_b])
+    try:
+        with pytest.raises(ValueError, match="already in a GroupEnv"):
+            GroupEnv([env_a])
+        with pytest.raises(ValueError, match="unique"):
+            GroupEnv([fresh, fresh])
+        assert group.envs == (env_a, env_b)
+        assert group.action_space is group.action_space
+    finally:
+        group.close()
+        fresh.close()
+
+
+def test_reused_observation_and_info_are_copied() -> None:
+    class ReuseEnv(gym.Env):
+        observation_space = gym.spaces.Box(0, 1, shape=(1,), dtype=np.float32)
+        action_space = gym.spaces.Discrete(2)
+
+        def __init__(self) -> None:
+            self.obs = np.zeros(1, np.float32)
+            self.info = {"n": 0}
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            self.obs[:] = 0
+            self.info["n"] = 0
+            return self.obs, self.info
+
+        def step(self, action):
+            self.obs[:] = 1
+            self.info["n"] += 1
+            return self.obs, 0.0, False, False, self.info
+
+    env = make_env(EnvConfig(env_fn=ReuseEnv, name="reuse"))
+    try:
+        obs0, _reward, _terminated, _truncated, info0 = env.step(0)
+        obs1, _reward, _terminated, _truncated, info1 = env.step(0)
+        assert obs0 is not obs1
+        assert info0 is not info1
+        assert float(obs0[0]) == 0.0
+        assert float(obs1[0]) == 1.0
+        assert info0["n"] == 0
+        assert info1["n"] == 1
+    finally:
+        env.close()
+
+
+def test_render_returns_the_env_value() -> None:
+    class FrameEnv(gym.Env):
+        observation_space = gym.spaces.Discrete(1)
+        action_space = gym.spaces.Discrete(1)
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            return 0, {}
+
+        def step(self, action):
+            return 0, 0.0, False, False, {}
+
+        def render(self):
+            return np.zeros((2, 2, 3), dtype=np.uint8)
+
+    single = make_env(EnvConfig(env_fn=FrameEnv, name="frame"))
+    group = make_group_env(
+        [
+            EnvConfig(env_fn=FrameEnv, name="frame-a"),
+            EnvConfig(env_fn=FrameEnv, name="frame-b"),
+        ]
+    )
+    try:
+        frame = single.render()
+        assert isinstance(frame, np.ndarray)
+        assert frame.shape == (2, 2, 3)
+        frames = group.render()
+        assert isinstance(frames, tuple)
+        assert len(frames) == 2
+        assert frames[0].shape == (2, 2, 3)
+    finally:
+        single.close()
+        group.close()

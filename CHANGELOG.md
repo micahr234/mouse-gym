@@ -21,20 +21,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `step()` takes a Gymnasium action and returns
   `(observation, reward, terminated, truncated, info)`. `terminated` and
   `truncated` are the wrapped env's flags as Python bools. The observation
-  and `info` dict are forwarded unchanged. `env.step_index` is `0` on a
+  and `info` dict are deep-copied. `env.step_index` is `0` on a
   reset frame. Random actions come from `action_space.sample()`.
-- `EnvConfig.seed_mode` chooses the reset seed. `constant` passes `seed`
-  on every reset. `stream` draws each reset seed from an RNG initialized
-  with `seed`. `none` passes `seed=None`.
+- `EnvConfig.seed_mode` chooses the reset seed and defaults to `none`,
+  which passes `seed=None`. `constant` passes `seed` on every reset.
+  `stream` draws each reset seed from an RNG initialized with `seed`.
 - `EnvConfig.reset_options` is forwarded to every reset mouse-gym issues.
+  Each reset gets a deep copy of a snapshot taken when the env is built.
 - `reward_transform` is called with `step_index`, `state`, `action`,
-  `reward`, `terminated`, `truncated`, and `next_state`. `action` is the
-  value passed to `step()`, or `None` on a reset frame.
+  `reward`, `terminated`, `truncated`, and `next_state`. On a reset frame,
+  `state` is the reset observation the first time and the previous
+  observation after that. `reward` is `0.0`. `terminated` and `truncated`
+  are false. `action` is `None` because that call does not apply an action.
 - `Metrics` records `episode_cum_rewards` and `episode_lengths` when the
   wrapped env reports `terminated` or `truncated`. Those flags mean whatever
-  the wrapped env uses them for.
+  the wrapped env uses them for. Both properties return tuples.
+- `GroupEnv.step` returns a tuple of per-env results. `GroupEnv.envs`
+  returns a tuple. `action_space` and `observation_space` are built once
+  when the group is created. Each `SingleEnv` belongs to at most one
+  `GroupEnv`.
+- `render()` returns the wrapped env's own value. `GroupEnv.render()`
+  returns one result per env. Set `render_mode` through `kwargs` or inside
+  `env_fn`.
 
 ### Removed
+- `EnvConfig.render`.
+- Sharing one `SingleEnv` across more than one `GroupEnv`.
 - `scripts/worker.sh`. The Cursor My Machines worker script lives only in
   `mouse-experiment` (`scripts/worker.sh` there still registers sibling
   `mouse-core` / `mouse-experiment` / `mouse-gym` checkouts).
