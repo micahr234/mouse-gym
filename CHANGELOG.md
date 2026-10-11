@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `make_env` through `env_fn`.
 
 ### Changed
+- Minimum Python version raised from 3.14 to 3.15. Development setup (`scripts/install.sh`), CI, the publish workflow, and Pyright now target free-threaded Python 3.15t. Python 3.14 is no longer supported.
+- Dependency floors raised to current releases: Gymnasium 1.4.0, NumPy 2.5.4, Matplotlib 3.11.2, and ipykernel 7.4.0.
 - `step()` takes a Gymnasium action and returns
   `(observation, reward, terminated, truncated, info)`. `terminated` and
   `truncated` are the wrapped env's flags as Python bools. The observation

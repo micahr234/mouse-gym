@@ -388,7 +388,7 @@ class GroupEnv:
     With ``max_threads=0`` (default), ``step`` runs every env on the calling thread.
     With ``max_threads > 0``, ``step`` distributes envs across up to ``max_threads``
     worker threads (capped at ``num_envs``) and preserves output order. On
-    free-threaded CPython (``3.14t``) those workers can run env steps in
+    free-threaded CPython (``3.15t``) those workers can run env steps in
     parallel. On a GIL-enabled interpreter, cheap Python envs are usually
     faster with ``max_threads=0``.
     """

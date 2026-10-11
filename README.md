@@ -20,13 +20,13 @@ See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
 ## Install
 
-**Requirements:** Python 3.14+ (free-threaded **3.14t** recommended for `GroupEnv` threads), Gymnasium ≥ 1.3, NumPy ≥ 2.5 (NumPy is also pulled in by Gymnasium).
+**Requirements:** Python 3.15+ (free-threaded **3.15t** recommended for `GroupEnv` threads), Gymnasium ≥ 1.4, NumPy ≥ 2.5.4 (NumPy is also pulled in by Gymnasium).
 
 ```bash
 pip install mouse-gym
 ```
 
-For development (free-threaded Python **3.14t** via uv):
+For development (free-threaded Python **3.15t** via uv):
 
 ```bash
 git clone https://github.com/micahr234/mouse-gym.git
@@ -59,7 +59,7 @@ env.close()
 
 - **Metrics on the env.** When `terminated` or `truncated` is true, the return and length are appended to `env.metrics.episode_cum_rewards` and `env.metrics.episode_lengths`. Those flags mean whatever the wrapped env uses them for. `EnvConfig.reward_transform` is applied to each env step and reset-frame reward before it appears in the step output and before those sums are recorded. It receives `step_index`, `state`, `action`, `reward`, `terminated`, `truncated`, and `next_state`. `state` is always an observation: the reset observation on the first reset frame, and the previous observation on later reset frames. Reset-frame `reward` is `0.0`, and `terminated` and `truncated` are false. The recorded return and length are tuples. See [03 — Metrics](examples/03_metrics.ipynb).
 
-- **Grouped envs.** `GroupEnv` steps multiple `SingleEnv` instances in one `step()` call. Pass a list or tuple of actions (`action_space.sample()` returns a tuple) and get back a tuple of `(observation, reward, terminated, truncated, info)` results, one per env. Each `SingleEnv` belongs to one group. By default (`max_threads=0`) stepping is sequential on the calling thread; set `max_threads > 0` to distribute envs across that many worker threads. On free-threaded CPython (`3.14t`) those workers can run env steps in parallel. On a GIL-enabled interpreter, cheap Python envs such as CartPole are usually faster with `max_threads=0`. See [02 — Multiple envs](examples/02_multi_env.ipynb). `bench/bench_env.py` times `step` for `SingleEnv` and `GroupEnv` widths.
+- **Grouped envs.** `GroupEnv` steps multiple `SingleEnv` instances in one `step()` call. Pass a list or tuple of actions (`action_space.sample()` returns a tuple) and get back a tuple of `(observation, reward, terminated, truncated, info)` results, one per env. Each `SingleEnv` belongs to one group. By default (`max_threads=0`) stepping is sequential on the calling thread; set `max_threads > 0` to distribute envs across that many worker threads. On free-threaded CPython (`3.15t`) those workers can run env steps in parallel. On a GIL-enabled interpreter, cheap Python envs such as CartPole are usually faster with `max_threads=0`. See [02 — Multiple envs](examples/02_multi_env.ipynb). `bench/bench_env.py` times `step` for `SingleEnv` and `GroupEnv` widths.
 
 ## Examples
 
