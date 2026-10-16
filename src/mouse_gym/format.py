@@ -169,6 +169,7 @@ class _EnvInstance:
         )
         obs = _copy_step_value(obs)
         info = _copy_step_value(info)
+        info["executed_action"] = None
         self._step_index = 0
         # The first reset has no earlier observation, so its state is the
         # reset observation. Later resets pass the observation we were holding.
@@ -207,6 +208,9 @@ class _EnvInstance:
         obs, raw_reward, terminated, truncated, info = self._env.step(action)
         obs = _copy_step_value(obs)
         info = _copy_step_value(info)
+        # Wrappers such as RepeatTaskEnv can emit inner reset frames without
+        # ending this outer episode. Preserve their no-action indication.
+        info.setdefault("executed_action", _copy_step_value(action))
         terminated = bool(terminated)
         truncated = bool(truncated)
 
@@ -216,7 +220,7 @@ class _EnvInstance:
         reward_f = self._apply_reward_transform(
             step_index=self._step_index,
             state=state,
-            action=action,
+            action=_copy_step_value(info["executed_action"]),
             reward=float(raw_reward),
             terminated=terminated,
             truncated=truncated,
@@ -257,6 +261,10 @@ class SingleEnv:
     truncated, info)``. ``reward`` is a Python ``float`` after
     ``reward_transform``. ``terminated`` and ``truncated`` are Python ``bool``s.
     The observation and ``info`` dict are deep-copied before they are returned.
+    ``info["executed_action"]`` is the action that produced the observation,
+    or ``None`` when the call reset the environment. A wrapped env may also
+    set this reserved key to ``None`` for an inner reset; reward transforms
+    receive ``action=None`` on those frames too.
     Read
     :attr:`step_index` for the count since the last mouse-gym reset (``0`` on a
     reset frame).

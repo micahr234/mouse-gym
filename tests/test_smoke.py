@@ -952,3 +952,39 @@ def test_render_returns_the_env_value() -> None:
     finally:
         single.close()
         group.close()
+
+
+@pytest.mark.parametrize("max_threads", [0, 2])
+def test_executed_action_metadata_covers_outer_and_inner_resets(max_threads):
+    RepeatTaskEnv = pytest.importorskip("repeat_task_gym").RepeatTaskEnv
+    calls = []
+    def transform(**transition):
+        calls.append(transition["action"])
+        return transition["reward"]
+    env = make_group_env([
+        EnvConfig(seed=i, seed_mode="stream", name=str(i),
+                  env_fn=lambda: RepeatTaskEnv(ImmediateTerminateEnv(), max_task_episodes=2),
+                  reward_transform=transform)
+        for i in range(2)
+    ], max_threads=max_threads)
+    try:
+        for inputs, expected in [([99, None], [None, None]), ([0, 1], [0, 1]),
+                                 ([99, None], [None, None]), ([1, 0], [1, 0]),
+                                 ([None, 99], [None, None])]:
+            outputs = env.step(inputs)
+            assert [out[-1]["executed_action"] for out in outputs] == expected
+        assert calls.count(None) == 6
+        assert calls.count(0) == calls.count(1) == 2
+    finally:
+        env.close()
+
+
+def test_plain_env_executed_action_records_reset_and_real_step():
+    env = make_env(EnvConfig(seed=0, seed_mode="constant", env_fn=ImmediateTerminateEnv))
+    try:
+        assert env.step(99)[-1]["executed_action"] is None
+        assert env.step(1)[-1]["executed_action"] == 1
+        assert env.step(None)[-1]["executed_action"] is None
+        assert env.step(0)[-1]["executed_action"] == 0
+    finally:
+        env.close()
