@@ -23,53 +23,10 @@ def _copy_step_value(value: Any) -> Any:
     return copy.deepcopy(value)
 
 
-class Metrics:
-    """Accumulates episode statistics for a single :class:`SingleEnv`.
-
-    :class:`SingleEnv` records a completed episode whenever the wrapped env
-    reports ``terminated`` or ``truncated``. Those flags mean whatever the
-    wrapped env uses them for. Call :meth:`clear` to wipe accumulated data
-    (for example between evaluation runs).
-
-    Attributes
-    ----------
-    episode_cum_rewards:
-        Tuple of cumulative rewards for every episode completed since the last
-        :meth:`clear` call. Values use the post-``reward_transform`` rewards,
-        including the reset-frame reward (``step_index == 0``).
-    episode_lengths:
-        Tuple of episode step counts for every completed episode since the last
-        :meth:`clear` call.
-    """
-
-    def __init__(self) -> None:
-        self._episode_cum_rewards: list[float] = []
-        self._episode_lengths: list[float] = []
-
-    def _record(self, cum_reward: float, length: float) -> None:
-        self._episode_cum_rewards.append(cum_reward)
-        self._episode_lengths.append(length)
-
-    def clear(self) -> None:
-        """Wipe all accumulated episode data."""
-        self._episode_cum_rewards = []
-        self._episode_lengths = []
-
-    @property
-    def episode_cum_rewards(self) -> tuple[float, ...]:
-        """Cumulative rewards for completed episodes."""
-        return tuple(self._episode_cum_rewards)
-
-    @property
-    def episode_lengths(self) -> tuple[float, ...]:
-        """Episode lengths (step counts) for completed episodes."""
-        return tuple(self._episode_lengths)
-
-
 class _EnvInstance:
     """Internal: wraps a single ``gym.Env`` with the mouse-gym step protocol.
 
-    Each env instance tracks its step index and cumulative reward, and implements
+    Each env instance maintains the internal reset and transform context for
     the two-frame boundary sequence: a step where the wrapped env reports
     ``terminated`` or ``truncated``, followed by a reset frame
     (``terminated=False``, ``truncated=False``, ``step_index=0``) on the next
@@ -103,12 +60,11 @@ class _EnvInstance:
         self._seed_mode = seed_mode
         self._seed_rng = np.random.default_rng(seed) if seed_mode == "stream" else None
 
-        # Episode state
+        # Execution context for autoresets and reward transforms.
         self._needs_initial_reset = True
         self._autoreset_pending = False
         self._step_index = 0
-        self._state: Any = None
-        self._episode_cum_reward = 0.0
+        self._observation: Any = None
 
         # Cache spaces so step() does not hop Gymnasium wrapper properties.
         self._action_space = env.action_space
@@ -117,11 +73,6 @@ class _EnvInstance:
     @property
     def name(self) -> str:
         return self._name
-
-    @property
-    def step_index(self) -> int:
-        """Steps since the last mouse-gym reset. ``0`` on a reset frame."""
-        return self._step_index
 
     def _apply_reward_transform(
         self,
@@ -158,8 +109,8 @@ class _EnvInstance:
         assert self._seed_rng is not None
         return int(self._seed_rng.integers(0, _RESET_SEED_BOUND))
 
-    def _do_reset(self) -> tuple[tuple[Any, float, bool, bool, dict[str, Any]], None]:
-        """Call env.reset() and return the reset-frame tuple; no metric result."""
+    def _do_reset(self) -> tuple[Any, float, bool, bool, dict[str, Any]]:
+        """Call env.reset() and return the reset-frame tuple."""
         # Fresh copy each reset so the env can mutate this dict without
         # changing the snapshot used on the next reset.
         options = copy.deepcopy(self._reset_options) or None
@@ -173,7 +124,7 @@ class _EnvInstance:
         self._step_index = 0
         # The first reset has no earlier observation, so its state is the
         # reset observation. Later resets pass the observation we were holding.
-        state = obs if self._state is None else self._state
+        state = obs if self._observation is None else self._observation
         reward_f = self._apply_reward_transform(
             step_index=0,
             state=state,
@@ -183,20 +134,11 @@ class _EnvInstance:
             truncated=False,
             next_state=obs,
         )
-        self._episode_cum_reward = reward_f
-        self._state = obs
-        return (obs, reward_f, False, False, info), None
+        self._observation = obs
+        return obs, reward_f, False, False, info
 
-    def step(
-        self, action: Any
-    ) -> tuple[tuple[Any, float, bool, bool, dict[str, Any]], tuple[float, float] | None]:
-        """Step this env instance; return ``(output, episode_result)``.
-
-        ``output`` is ``(observation, reward, terminated, truncated, info)``.
-        ``episode_result`` is ``(cum_reward, length)`` when the wrapped env
-        reports ``terminated`` or ``truncated`` on this step, or ``None``
-        otherwise (including reset frames).
-        """
+    def step(self, action: Any) -> tuple[Any, float, bool, bool, dict[str, Any]]:
+        """Step this env instance and return a Gymnasium output tuple."""
         if self._needs_initial_reset:
             self._needs_initial_reset = False
             return self._do_reset()
@@ -216,7 +158,7 @@ class _EnvInstance:
 
         self._step_index += 1
 
-        state = self._state
+        state = self._observation
         reward_f = self._apply_reward_transform(
             step_index=self._step_index,
             state=state,
@@ -226,17 +168,11 @@ class _EnvInstance:
             truncated=truncated,
             next_state=obs,
         )
-        self._episode_cum_reward += reward_f
-        self._state = obs
+        self._observation = obs
 
-        episode_result: tuple[float, float] | None
         if terminated or truncated:
-            episode_result = (self._episode_cum_reward, float(self._step_index))
             self._autoreset_pending = True
-        else:
-            episode_result = None
-
-        return (obs, reward_f, terminated, truncated, info), episode_result
+        return obs, reward_f, terminated, truncated, info
 
     def render(self) -> Any:
         """Return whatever the wrapped env's ``render()`` returns."""
@@ -265,37 +201,20 @@ class SingleEnv:
     or ``None`` when the call reset the environment. A wrapped env may also
     set this reserved key to ``None`` for an inner reset; reward transforms
     receive ``action=None`` on those frames too.
-    Read
-    :attr:`step_index` for the count since the last mouse-gym reset (``0`` on a
-    reset frame).
-
-    Episode statistics are accumulated automatically in :attr:`metrics`
-    (:class:`Metrics`) whenever those flags are true. Call
-    ``env.metrics.clear()`` to wipe accumulated data between evaluation runs.
+    Rollout progress and statistics are collected separately: create a
+    :class:`mouse_gym.RolloutTracker` and call ``tracker.update(output=output)``
+    after every step. Use :class:`mouse_gym.RepeatTaskTracker` with repeated
+    tasks. Environments do not own or update trackers.
     """
 
     def __init__(self, env_instance: _EnvInstance) -> None:
         self._env_instance = env_instance
-        self._metrics = Metrics()
         self._group: GroupEnv | None = None
-
-    @property
-    def metrics(self) -> Metrics:
-        """Episode statistics; accumulates results from every completed episode.
-
-        Call ``env.metrics.clear()`` to wipe accumulated data between evaluation runs.
-        """
-        return self._metrics
 
     @property
     def name(self) -> str:
         """Name of this env instance."""
         return self._env_instance.name
-
-    @property
-    def step_index(self) -> int:
-        """Steps since the last mouse-gym reset. ``0`` on a reset frame."""
-        return self._env_instance.step_index
 
     @property
     def action_space(self) -> gym.Space:
@@ -321,14 +240,10 @@ class SingleEnv:
         On the first call and on any call immediately after ``terminated`` or
         ``truncated``, ``action`` is ignored and a reset frame is returned instead.
 
-        Completed-episode statistics are recorded automatically into :attr:`metrics`.
-        Call ``env.metrics.clear()`` to reset between runs.
+        Pass the returned output to a separate rollout tracker when progress
+        tracking or completed summaries are needed.
         """
-        output, episode_result = self._env_instance.step(action)
-        if episode_result is not None:
-            cum_reward, length = episode_result
-            self._metrics._record(cum_reward, length)
-        return output
+        return self._env_instance.step(action)
 
     def render(self) -> Any:
         """Return whatever the wrapped env's ``render()`` returns."""
@@ -337,41 +252,6 @@ class SingleEnv:
     def close(self) -> None:
         """Close the underlying env."""
         self._env_instance.close()
-
-
-class GroupMetrics:
-    """Live read-through view over :class:`Metrics` instances of a :class:`GroupEnv`.
-
-    Stores no episode data of its own — all reads delegate to each constituent
-    :class:`SingleEnv`'s metrics.
-
-    Attributes
-    ----------
-    episode_cum_rewards:
-        Per-env tuple of cumulative rewards. ``episode_cum_rewards[i]`` is
-        ``envs[i].metrics.episode_cum_rewards``.
-    episode_lengths:
-        Per-env tuple of episode step counts. ``episode_lengths[i]`` is
-        ``envs[i].metrics.episode_lengths``.
-    """
-
-    def __init__(self, envs: list[SingleEnv]) -> None:
-        self._envs = envs
-
-    @property
-    def episode_cum_rewards(self) -> tuple[tuple[float, ...], ...]:
-        """Per-env cumulative rewards, read live from each env's metrics."""
-        return tuple(e.metrics.episode_cum_rewards for e in self._envs)
-
-    @property
-    def episode_lengths(self) -> tuple[tuple[float, ...], ...]:
-        """Per-env episode lengths, read live from each env's metrics."""
-        return tuple(e.metrics.episode_lengths for e in self._envs)
-
-    def clear(self) -> None:
-        """Clear metrics on every constituent env."""
-        for e in self._envs:
-            e.metrics.clear()
 
 
 class GroupEnv:
@@ -383,9 +263,8 @@ class GroupEnv:
     Each :class:`SingleEnv` belongs to at most one :class:`GroupEnv`. Membership
     is fixed at construction.
 
-    ``GroupEnv`` stores no episode data. Each :class:`SingleEnv` owns its own
-    :class:`Metrics`; ``GroupEnv.metrics`` is a live read-through view with no
-    independent storage.
+    ``GroupEnv`` stores no rollout statistics. Callers can keep one separate
+    rollout tracker per env and update them from the returned output tuples.
 
     ``step`` takes a list or tuple of actions, one per env, and returns a tuple
     of ``(observation, reward, terminated, truncated, info)`` results.
@@ -422,7 +301,6 @@ class GroupEnv:
         self._envs = list(envs)
         for env in self._envs:
             env._group = self
-        self._metrics = GroupMetrics(self._envs)
         self._max_threads = max_threads
         self._action_space = gym.spaces.Tuple(tuple(env.action_space for env in self._envs))
         self._observation_space = gym.spaces.Tuple(
@@ -438,11 +316,6 @@ class GroupEnv:
     def envs(self) -> tuple[SingleEnv, ...]:
         """The constituent :class:`SingleEnv` instances, in construction order."""
         return tuple(self._envs)
-
-    @property
-    def metrics(self) -> GroupMetrics:
-        """Live read-through view over each env's :class:`Metrics`; stores no data."""
-        return self._metrics
 
     @property
     def num_envs(self) -> int:

@@ -8,7 +8,13 @@ import gymnasium as gym
 import numpy as np
 import pytest
 
-from mouse_gym import EnvConfig, GroupEnv, Metrics, make_env, make_group_env
+from mouse_gym import EnvConfig, GroupEnv, RepeatTaskTracker, RolloutTracker, make_env, make_group_env
+
+
+def _tracked_step(env, tracker: RolloutTracker, action):
+    output = env.step(action)
+    tracker.update(output=output)
+    return output
 
 
 def _rollout(env, steps: int = 5) -> list:
@@ -44,8 +50,6 @@ def test_cartpole_step_contract() -> None:
             assert isinstance(terminated, bool)
             assert isinstance(truncated, bool)
             assert isinstance(info, dict)
-        for per_env in env.metrics.episode_cum_rewards:
-            assert all(isinstance(v, float) for v in per_env)
     finally:
         env.close()
 
@@ -215,10 +219,11 @@ class _ProceduralEnv(gym.Env):
 
 
 def _reset_frames(env, *, steps: int) -> list[tuple]:
+    tracker = RolloutTracker()
     frames = []
     for _ in range(steps):
-        output = env.step(env.action_space.sample())
-        if env.step_index == 0:
+        output = _tracked_step(env, tracker, env.action_space.sample())
+        if tracker.step_index == 0:
             frames.append(output)
     return frames
 
@@ -344,42 +349,44 @@ def test_first_reset_map_is_deterministic() -> None:
 
 
 def test_autoreset_frame_reward_defaults_to_zero() -> None:
+    tracker = RolloutTracker()
     env = make_env(
         EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant", kwargs={"max_episode_steps": 8})
     )
     try:
-        (_obs, reward, terminated, truncated, _info), _step = _roll_until_autoreset(env)
-        assert env.step_index == 0
+        (_obs, reward, terminated, truncated, _info), _step = _roll_until_autoreset(env, tracker)
+        assert tracker.step_index == 0
         assert reward == 0.0
         assert terminated is False
         assert truncated is False
-        assert len(env.metrics.episode_cum_rewards) >= 1
+        assert len(tuple(episode.reward for episode in tracker.episodes)) >= 1
     finally:
         env.close()
 
 
 def test_initial_reset_frame_reward_from_transform() -> None:
+    tracker = RolloutTracker()
     def transform(*, step_index: int, reward: float, **_kwargs: object) -> float:
         return -1.0 if step_index == 0 else reward
 
     env = make_env(EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant", reward_transform=transform))
     try:
-        _obs, reward, terminated, truncated, _info = env.step(env.action_space.sample())
-        assert env.step_index == 0
+        _obs, reward, terminated, truncated, _info = _tracked_step(env, tracker, env.action_space.sample())
+        assert tracker.step_index == 0
         assert reward == -1.0
         assert terminated is False
         assert truncated is False
-        assert env.metrics.episode_cum_rewards == ()
+        assert tuple(episode.reward for episode in tracker.episodes) == ()
     finally:
         env.close()
 
 
-def _roll_until_autoreset(env, *, max_steps: int = 500) -> tuple[tuple, int]:
-    env.step(env.action_space.sample())
+def _roll_until_autoreset(env, tracker: RolloutTracker, *, max_steps: int = 500) -> tuple[tuple, int]:
+    _tracked_step(env, tracker, env.action_space.sample())
     for step in range(1, max_steps):
-        prev_step_index = env.step_index
-        output = env.step(env.action_space.sample())
-        if env.step_index == 0 and prev_step_index > 0:
+        prev_step_index = tracker.step_index
+        output = _tracked_step(env, tracker, env.action_space.sample())
+        if tracker.step_index == 0 and prev_step_index > 0:
             return output, step
     raise AssertionError(f"no autoreset frame within {max_steps} steps")
 
@@ -482,19 +489,21 @@ class BothFlagsEnv(gym.Env):
 
 
 def test_gym_flags_pass_through_together() -> None:
+    tracker = RolloutTracker()
     env = make_env(EnvConfig(seed=0, seed_mode="constant", env_fn=BothFlagsEnv))
     try:
-        env.step(env.action_space.sample())
-        _obs, _reward, terminated, truncated, _info = env.step(env.action_space.sample())
+        _tracked_step(env, tracker, env.action_space.sample())
+        _obs, _reward, terminated, truncated, _info = _tracked_step(env, tracker, env.action_space.sample())
         assert terminated is True
         assert truncated is True
-        assert env.metrics.episode_cum_rewards == (1.0,)
-        assert env.metrics.episode_lengths == (1.0,)
+        assert tuple(episode.reward for episode in tracker.episodes) == (1.0,)
+        assert tuple(episode.length for episode in tracker.episodes) == (1.0,)
     finally:
         env.close()
 
 
-def test_reward_transform_applies_before_metrics() -> None:
+def test_reward_transform_applies_before_tracking() -> None:
+    tracker = RolloutTracker()
     env = make_env(
         EnvConfig(
             seed=0,
@@ -504,12 +513,12 @@ def test_reward_transform_applies_before_metrics() -> None:
         )
     )
     try:
-        _obs, reward, _terminated, _truncated, _info = env.step(env.action_space.sample())
+        _obs, reward, _terminated, _truncated, _info = _tracked_step(env, tracker, env.action_space.sample())
         assert reward == 0.0
-        _obs, reward, _terminated, _truncated, _info = env.step(env.action_space.sample())
+        _obs, reward, _terminated, _truncated, _info = _tracked_step(env, tracker, env.action_space.sample())
         assert reward == 10.0
-        assert env.metrics.episode_cum_rewards == (10.0,)
-        assert not hasattr(env.metrics, "task_cum_rewards")
+        assert tuple(episode.reward for episode in tracker.episodes) == (10.0,)
+        assert not hasattr(tracker, "tasks")
     finally:
         env.close()
 
@@ -584,6 +593,7 @@ def test_reward_transform_receives_transition_kwargs() -> None:
 
 
 def test_reward_transform_accepts_kwargs_function() -> None:
+    tracker = RolloutTracker()
     def scale(*, reward: float, **_kwargs: object) -> float:
         return reward * 10.0
 
@@ -591,15 +601,16 @@ def test_reward_transform_accepts_kwargs_function() -> None:
         EnvConfig(seed=0, seed_mode="constant", env_fn=ImmediateTerminateEnv, reward_transform=scale)
     )
     try:
-        env.step(env.action_space.sample())
-        _obs, reward, _terminated, _truncated, _info = env.step(env.action_space.sample())
+        _tracked_step(env, tracker, env.action_space.sample())
+        _obs, reward, _terminated, _truncated, _info = _tracked_step(env, tracker, env.action_space.sample())
         assert reward == 10.0
-        assert env.metrics.episode_cum_rewards == (10.0,)
+        assert tuple(episode.reward for episode in tracker.episodes) == (10.0,)
     finally:
         env.close()
 
 
-def test_reset_frame_reward_from_transform_is_in_metrics() -> None:
+def test_reset_frame_reward_from_transform_is_in_summary() -> None:
+    tracker = RolloutTracker()
     def transform(*, step_index: int, reward: float, **_kwargs: object) -> float:
         return -1.0 if step_index == 0 else reward * 10.0
 
@@ -607,18 +618,19 @@ def test_reset_frame_reward_from_transform_is_in_metrics() -> None:
         EnvConfig(seed=0, seed_mode="constant", env_fn=ImmediateTerminateEnv, reward_transform=transform)
     )
     try:
-        _obs, reward, _terminated, _truncated, _info = env.step(env.action_space.sample())
+        _obs, reward, _terminated, _truncated, _info = _tracked_step(env, tracker, env.action_space.sample())
         assert reward == -1.0
-        assert env.metrics.episode_cum_rewards == ()
-        _obs, reward, _terminated, _truncated, _info = env.step(env.action_space.sample())
+        assert tuple(episode.reward for episode in tracker.episodes) == ()
+        _obs, reward, _terminated, _truncated, _info = _tracked_step(env, tracker, env.action_space.sample())
         assert reward == 10.0
-        assert env.metrics.episode_cum_rewards == (9.0,)
-        assert env.metrics.episode_lengths == (1.0,)
+        assert tuple(episode.reward for episode in tracker.episodes) == (9.0,)
+        assert tuple(episode.length for episode in tracker.episodes) == (1.0,)
     finally:
         env.close()
 
 
 def test_later_reset_frames_use_the_same_transform() -> None:
+    tracker = RolloutTracker()
     def transform(*, step_index: int, reward: float, **_kwargs: object) -> float:
         return -1.0 if step_index == 0 else reward
 
@@ -626,11 +638,11 @@ def test_later_reset_frames_use_the_same_transform() -> None:
         EnvConfig(seed=0, seed_mode="constant", env_fn=ImmediateTerminateEnv, reward_transform=transform)
     )
     try:
-        _obs, reward, _terminated, _truncated, _info = env.step(env.action_space.sample())
+        _obs, reward, _terminated, _truncated, _info = _tracked_step(env, tracker, env.action_space.sample())
         assert reward == -1.0
-        env.step(env.action_space.sample())
-        _obs, reward, terminated, _truncated, _info = env.step(env.action_space.sample())
-        assert env.step_index == 0
+        _tracked_step(env, tracker, env.action_space.sample())
+        _obs, reward, terminated, _truncated, _info = _tracked_step(env, tracker, env.action_space.sample())
+        assert tracker.step_index == 0
         assert reward == -1.0
         assert terminated is False
     finally:
@@ -643,17 +655,18 @@ def test_env_config_rejects_non_callable_reward_transform() -> None:
 
 
 def test_step_index_resets_after_gym_done() -> None:
+    tracker = RolloutTracker()
     env = make_env(
         EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant", kwargs={"max_episode_steps": 8})
     )
     try:
-        _obs, _reward, terminated, truncated, _info = env.step(env.action_space.sample())
-        assert env.step_index == 0
+        _obs, _reward, terminated, truncated, _info = _tracked_step(env, tracker, env.action_space.sample())
+        assert tracker.step_index == 0
         saw_nonzero = False
         for _ in range(100):
-            prev = env.step_index
-            _obs, _reward, terminated, truncated, _info = env.step(env.action_space.sample())
-            cur = env.step_index
+            prev = tracker.step_index
+            _obs, _reward, terminated, truncated, _info = _tracked_step(env, tracker, env.action_space.sample())
+            cur = tracker.step_index
             if cur == 0 and prev > 0:
                 assert terminated is False
                 assert truncated is False
@@ -670,6 +683,7 @@ def test_step_index_resets_after_gym_done() -> None:
 
 def test_observation_episode_flags_do_not_end_the_segment() -> None:
     """Flags inside the observation are data. Only Gymnasium flags end a segment."""
+    tracker = RolloutTracker()
 
     class FlagInObsEnv(gym.Env):
         def __init__(self) -> None:
@@ -705,28 +719,28 @@ def test_observation_episode_flags_do_not_end_the_segment() -> None:
 
     env = make_env(EnvConfig(seed=0, seed_mode="constant", env_fn=FlagInObsEnv))
     try:
-        observation, _reward, terminated, _truncated, _info = env.step(0)
-        assert env.step_index == 0
-        assert env.metrics.episode_cum_rewards == ()
+        observation, _reward, terminated, _truncated, _info = _tracked_step(env, tracker, 0)
+        assert tracker.step_index == 0
+        assert tuple(episode.reward for episode in tracker.episodes) == ()
 
-        observation, _reward, terminated, _truncated, _info = env.step(0)
+        observation, _reward, terminated, _truncated, _info = _tracked_step(env, tracker, 0)
         assert bool(observation["episode_terminated"]) is True
         assert terminated is False
-        assert env.step_index == 1
-        assert env.metrics.episode_cum_rewards == ()
+        assert tracker.step_index == 1
+        assert tuple(episode.reward for episode in tracker.episodes) == ()
 
-        observation, _reward, _terminated, _truncated, _info = env.step(0)
-        assert env.step_index == 2
+        observation, _reward, _terminated, _truncated, _info = _tracked_step(env, tracker, 0)
+        assert tracker.step_index == 2
         assert bool(observation["episode_terminated"]) is False
 
-        _observation, _reward, terminated, _truncated, _info = env.step(0)
+        _observation, _reward, terminated, _truncated, _info = _tracked_step(env, tracker, 0)
         assert terminated is True
-        assert env.step_index == 3
-        assert env.metrics.episode_cum_rewards == (3.0,)
-        assert env.metrics.episode_lengths == (3.0,)
+        assert tracker.step_index == 3
+        assert tuple(episode.reward for episode in tracker.episodes) == (3.0,)
+        assert tuple(episode.length for episode in tracker.episodes) == (3.0,)
 
-        _observation, _reward, terminated, _truncated, _info = env.step(0)
-        assert env.step_index == 0
+        _observation, _reward, terminated, _truncated, _info = _tracked_step(env, tracker, 0)
+        assert tracker.step_index == 0
         assert terminated is False
         inner = cast(FlagInObsEnv, env._env_instance._env.unwrapped)
         assert inner.resets == 2
@@ -776,34 +790,32 @@ def test_anonymous_env_fn_requires_name() -> None:
         make_env(EnvConfig(seed=0, seed_mode="constant", env_fn=lambda: gym.make("CartPole-v1")))
 
 
-def test_metrics_accumulates_and_clears() -> None:
+def test_tracker_accumulates_and_clears() -> None:
+    tracker = RolloutTracker()
     env = make_env(
         EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant", kwargs={"max_episode_steps": 10})
     )
     try:
-        assert isinstance(env.metrics, Metrics)
-        assert env.metrics.episode_cum_rewards == ()
-        assert env.metrics.episode_lengths == ()
-        assert not hasattr(env.metrics, "task_cum_rewards")
-        assert not hasattr(env.metrics, "task_lengths")
+        assert isinstance(tracker, RolloutTracker)
+        assert tracker.episodes == ()
+        assert not hasattr(tracker, "tasks")
 
         for _ in range(200):
-            env.step(env.action_space.sample())
-            if env.metrics.episode_cum_rewards:
+            _tracked_step(env, tracker, env.action_space.sample())
+            if tracker.episodes:
                 break
         else:
             raise AssertionError("no episode completed within 200 steps")
 
-        rewards = env.metrics.episode_cum_rewards
-        lengths = env.metrics.episode_lengths
+        rewards = tuple(episode.reward for episode in tracker.episodes)
+        lengths = tuple(episode.length for episode in tracker.episodes)
         assert len(rewards) >= 1
         assert len(lengths) == len(rewards)
         assert all(isinstance(r, float) for r in rewards)
-        assert all(isinstance(length, float) for length in lengths)
+        assert all(isinstance(length, int) for length in lengths)
 
-        env.metrics.clear()
-        assert env.metrics.episode_cum_rewards == ()
-        assert env.metrics.episode_lengths == ()
+        tracker.clear()
+        assert tracker.episodes == ()
     finally:
         env.close()
 
@@ -814,7 +826,6 @@ def test_group_env_max_threads_default_is_main_thread() -> None:
         assert env.max_threads == 0
         outputs = _rollout(env, steps=3)
         assert len(outputs) == 3
-        assert all(single.step_index >= 0 for single in env.envs)
     finally:
         env.close()
 
@@ -855,7 +866,6 @@ def test_group_env_max_threads_matches_sequential_contract() -> None:
             for i, (seq, thr) in enumerate(zip(seq_out, thr_out)):
                 assert seq[2] == thr[2]
                 assert seq[3] == thr[3]
-                assert sequential.envs[i].step_index == threaded.envs[i].step_index
                 np.testing.assert_array_equal(seq[0], thr[0])
                 assert seq[1] == thr[1]
     finally:
@@ -969,7 +979,7 @@ def test_executed_action_metadata_covers_outer_and_inner_resets(max_threads):
     ], max_threads=max_threads)
     try:
         for inputs, expected in [([99, None], [None, None]), ([0, 1], [0, 1]),
-                                 ([99, None], [None, None]), ([1, 0], [1, 0]),
+                                 ([None, None], [None, None]), ([1, 0], [1, 0]),
                                  ([None, 99], [None, None])]:
             outputs = env.step(inputs)
             assert [out[-1]["executed_action"] for out in outputs] == expected
@@ -986,5 +996,41 @@ def test_plain_env_executed_action_records_reset_and_real_step():
         assert env.step(1)[-1]["executed_action"] == 1
         assert env.step(None)[-1]["executed_action"] is None
         assert env.step(0)[-1]["executed_action"] == 0
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize("max_threads", [0, 2])
+def test_separate_trackers_collect_repeated_and_plain_group_outputs(max_threads):
+    RepeatTaskEnv = pytest.importorskip("repeat_task_gym").RepeatTaskEnv
+    env = make_group_env([
+        EnvConfig(env_fn=ImmediateTerminateEnv),
+        EnvConfig(name="repeat", env_fn=lambda: RepeatTaskEnv(
+            ImmediateTerminateEnv(), max_task_episodes=2)),
+    ], max_threads=max_threads)
+    plain = RolloutTracker()
+    repeated = RepeatTaskTracker()
+    trackers = (plain, repeated)
+    try:
+        for _ in range(4):
+            outputs = env.step([
+                single.action_space.sample() if tracker.action_requested else None
+                for single, tracker in zip(env.envs, trackers)
+            ])
+            for tracker, output in zip(trackers, outputs):
+                tracker.update(output=output)
+        assert [summary.reward for summary in plain.episodes] == [1.0, 1.0]
+        assert [summary.reward for summary in repeated.episodes] == [1.0, 1.0]
+        assert repeated.tasks[0].reward == 2.0
+        assert repeated.tasks[0].length == 3
+        assert repeated.tasks[0].completed_episodes == 2
+        assert repeated.step_index == 3
+        assert repeated.repeat_step_index == 1
+        assert not repeated.action_requested
+        assert not hasattr(env, "metrics")
+        assert not hasattr(env, "trackers")
+        assert not hasattr(env.envs[0], "metrics")
+        assert not hasattr(env.envs[0], "tracker")
+        assert not hasattr(env.envs[0], "step_index")
     finally:
         env.close()

@@ -36,14 +36,15 @@ If you edit notebooks with a different tool (browser Jupyter, `nbconvert`, scrip
 
 Tests live under [`tests/`](tests/):
 
-- `test_smoke.py` — core rollout protocol (CartPole, custom `env_fn`, info passthrough, metrics)
+- `test_smoke.py` — core rollout protocol (CartPole, custom `env_fn`, info passthrough, separate tracker integration)
+- `test_tracker.py` — ordinary and repeated rollout boundaries, counters, and completed summaries
 
 If you add a new feature, add or extend a test under [`tests/`](tests/) and/or a notebook under [`examples/`](examples/).
 
 ## Code style
 
 - Python 3.15+ (free-threaded `3.15t` for threaded `GroupEnv`), type-annotated throughout.
-- Follow the existing patterns: config in `config.py`, build in `build.py`, formatting in `format.py`, public API in `__init__.py`. Third-party envs and Gymnasium wrappers are built by users via `env_fn` rather than bundled integrations. Implementation details belong in code comments and docstrings.
+- Follow the existing patterns: config in `config.py`, build in `build.py`, formatting in `format.py`, standalone tracking in `tracker.py`, public API in `__init__.py`. Third-party envs and Gymnasium wrappers are built by users via `env_fn` rather than bundled integrations. Implementation details belong in code comments and docstrings.
 - Avoid silent fallbacks — if a precondition isn't met, raise a clear error.
 - Comments should explain *why*, not *what*.
 

@@ -6,10 +6,10 @@ from mouse_gym.build import make_env, make_group_env
 from mouse_gym.config import EnvConfig
 from mouse_gym.format import (
     GroupEnv,
-    GroupMetrics,
-    Metrics,
     SingleEnv,
 )
+
+from mouse_gym.tracker import EpisodeSummary, RepeatTaskTracker, RolloutTracker, TaskSummary
 
 __version__ = version("mouse-gym")
 
@@ -17,9 +17,11 @@ __all__ = [
     "__version__",
     "EnvConfig",
     "GroupEnv",
-    "GroupMetrics",
     "make_env",
     "make_group_env",
-    "Metrics",
     "SingleEnv",
+    "RolloutTracker",
+    "RepeatTaskTracker",
+    "EpisodeSummary",
+    "TaskSummary",
 ]

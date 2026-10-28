@@ -36,7 +36,7 @@ class EnvConfig:
             its own deep copy, taken from a snapshot captured when the env is built.
         reward_transform: Optional callable applied to each step reward
             (including reset frames) before it is written to the step output
-            and accumulated into episode metrics. Called with ``step_index``,
+            and collected by a separate rollout tracker. Called with ``step_index``,
             ``state``, ``action``, ``reward``, ``terminated``, ``truncated``,
             and ``next_state``. ``state`` is the observation before the step.
             On the first reset frame it is the reset observation, because no
