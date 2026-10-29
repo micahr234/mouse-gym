@@ -114,8 +114,8 @@ def test_inner_ending_preserves_both_flags_without_ending_task(terminated, trunc
     tracker.update(
         output=repeated_output(reward=3, inner_terminated=terminated, inner_truncated=truncated)
     )
-    assert tracker.repeat_episode_terminated is terminated
-    assert tracker.repeat_episode_truncated is truncated
+    assert tracker.inner_terminated is terminated
+    assert tracker.inner_truncated is truncated
     assert tracker.episodes == (EpisodeSummary(0, 3.0, 1, terminated, truncated, task_index=0),)
     assert not tracker.ended and not tracker.action_requested
     assert tracker.tasks == ()
@@ -130,7 +130,7 @@ def test_task_can_end_mid_episode_without_fabricating_an_inner_summary():
     tracker.update(output=repeated_output(reward=2))
     tracker.update(output=repeated_output(reward=3, terminated=True))
     assert tracker.ended and not tracker.action_requested
-    assert not tracker.repeat_episode_terminated and not tracker.repeat_episode_truncated
+    assert not tracker.inner_terminated and not tracker.inner_truncated
     assert tracker.episodes == ()
     assert tracker.tasks == (TaskSummary(0, 5.0, 1, True, False, completed_episodes=0),)
 
@@ -288,3 +288,31 @@ def test_deepcopied_tracker_branches_have_independent_progress_and_history():
 def test_completed_summaries_are_immutable(summary):
     with pytest.raises(FrozenInstanceError):
         summary.reward = 7.0
+
+
+@pytest.mark.parametrize("tracker_type, make_output", [
+    (RolloutTracker, ordinary_output), (RepeatTaskTracker, repeated_output),
+])
+@pytest.mark.parametrize("ending", ["terminated", "truncated"])
+def test_next_episode_index_predicts_the_next_frame_without_advancing(tracker_type, make_output, ending):
+    tracker = tracker_type()
+    outputs = [make_output(), make_output(), make_output(**{ending: True}),
+               make_output(**{ending: True}), make_output()]
+    for output, expected in zip(outputs, [0, 0, 0, 1, 2], strict=True):
+        before = deepcopy(tracker.__dict__)
+        assert tracker.next_episode_index == tracker.next_episode_index == expected
+        assert tracker.__dict__ == before
+        tracker.update(output=output)
+        assert tracker.episode_index == expected
+    tracker.clear()
+    assert tracker.next_episode_index == 2
+
+
+@pytest.mark.parametrize("ending", ["inner_terminated", "inner_truncated"])
+def test_next_episode_index_does_not_advance_at_inner_repeat_boundaries(ending):
+    tracker = RepeatTaskTracker()
+    tracker.update(output=repeated_output())
+    tracker.update(output=repeated_output(**{ending: True}))
+    assert tracker.next_episode_index == 0
+    tracker.update(output=repeated_output())
+    assert tracker.episode_index == 0 and tracker.repeat_episode_index == 1

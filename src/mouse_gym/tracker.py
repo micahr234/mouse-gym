@@ -85,6 +85,16 @@ class RolloutTracker:
         return self.terminated or self.truncated
 
     @property
+    def next_episode_index(self) -> int:
+        """Episode index of the next output passed to :meth:`update`.
+
+        Zero before the first output, unchanged during an active episode,
+        and incremented after outer termination or truncation. Reading this
+        property does not advance the tracker.
+        """
+        return self.episode_index + int(self.output is None or self.ended)
+
+    @property
     def episodes(self) -> tuple[EpisodeSummary, ...]:
         """Completed episodes since the last :meth:`clear` call."""
         return tuple(self._episodes)
@@ -104,7 +114,7 @@ class RolloutTracker:
         copied_output = observation, reward, bool(terminated), bool(truncated), info
         return _Frame(
             output=copied_output,
-            episode_index=self.episode_index + int(episode_start),
+            episode_index=self.next_episode_index,
             step_index=0 if episode_start else self.step_index + 1,
             episode_start=episode_start,
             cumulative_reward=reward if episode_start else self.cumulative_reward + reward,
@@ -155,7 +165,8 @@ class RepeatTaskTracker(RolloutTracker):
 
     The inherited ``episode_index``, ``step_index``, ``ended``, and
     ``cumulative_reward`` describe the outer task. ``repeat_*`` fields describe
-    its current inner episode. :attr:`episodes` contains inner summaries and
+    its current inner episode. ``inner_terminated`` and
+    ``inner_truncated`` report inner endings. :attr:`episodes` contains inner summaries and
     :attr:`tasks` contains outer summaries. An outer ending alone never
     fabricates an inner ending. ``action_requested`` is false at either kind
     of boundary, including when the next frame will reset an inner episode.
@@ -165,8 +176,8 @@ class RepeatTaskTracker(RolloutTracker):
         super().__init__()
         self.repeat_episode_index = -1
         self.repeat_episode_start = False
-        self.repeat_episode_terminated = False
-        self.repeat_episode_truncated = False
+        self.inner_terminated = False
+        self.inner_truncated = False
         self.repeat_step_index = -1
         self.repeat_cumulative_reward = 0.0
         self._tasks: list[TaskSummary] = []
@@ -195,12 +206,12 @@ class RepeatTaskTracker(RolloutTracker):
                 "and episode_truncated keys"
             )
         observation = wrapped_observation["observation"]
-        repeat_terminated = bool(wrapped_observation["episode_terminated"])
-        repeat_truncated = bool(wrapped_observation["episode_truncated"])
+        inner_terminated = bool(wrapped_observation["episode_terminated"])
+        inner_truncated = bool(wrapped_observation["episode_truncated"])
         repeat_start = (
             frame.episode_start
-            or self.repeat_episode_terminated
-            or self.repeat_episode_truncated
+            or self.inner_terminated
+            or self.inner_truncated
         )
         repeat_episode_index = (
             0 if frame.episode_start else self.repeat_episode_index + int(repeat_start)
@@ -209,14 +220,14 @@ class RepeatTaskTracker(RolloutTracker):
         repeat_reward = reward if repeat_start else self.repeat_cumulative_reward + reward
         completed_episodes = 0 if frame.episode_start else self._task_completed_episodes
         episode_summary = None
-        if repeat_terminated or repeat_truncated:
+        if inner_terminated or inner_truncated:
             completed_episodes += 1
             episode_summary = EpisodeSummary(
                 episode_index=repeat_episode_index,
                 reward=repeat_reward,
                 length=repeat_step_index,
-                terminated=repeat_terminated,
-                truncated=repeat_truncated,
+                terminated=inner_terminated,
+                truncated=inner_truncated,
                 task_index=frame.episode_index,
             )
         task_summary = (
@@ -237,12 +248,12 @@ class RepeatTaskTracker(RolloutTracker):
         self.observation = observation
         self.repeat_episode_index = repeat_episode_index
         self.repeat_episode_start = repeat_start
-        self.repeat_episode_terminated = repeat_terminated
-        self.repeat_episode_truncated = repeat_truncated
+        self.inner_terminated = inner_terminated
+        self.inner_truncated = inner_truncated
         self.repeat_step_index = repeat_step_index
         self.repeat_cumulative_reward = repeat_reward
         self._task_completed_episodes = completed_episodes
-        self.action_requested = not (self.ended or repeat_terminated or repeat_truncated)
+        self.action_requested = not (self.ended or inner_terminated or inner_truncated)
         if episode_summary is not None:
             self._episodes.append(episode_summary)
         if task_summary is not None:
