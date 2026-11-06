@@ -54,14 +54,14 @@ setup_venv() {
         rm -rf .venv
     fi
 
-    # Free-threaded 3.15t so GroupEnv max_threads can run env steps in parallel.
-    log "Ensuring free-threaded Python 3.15t is available..."
-    if ! uv python install 3.15t; then
-        error "Failed to install Python 3.15t"
+    # Standard Python 3.15; GroupEnv uses processes for parallel execution.
+    log "Ensuring standard Python 3.15 is available..."
+    if ! uv python install 3.15; then
+        error "Failed to install Python 3.15"
         return 1
     fi
 
-    if ! uv venv --python 3.15t; then
+    if ! uv venv --python 3.15; then
         error "Failed to create virtual environment"
         return 1
     fi

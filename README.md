@@ -22,13 +22,13 @@ See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
 ## Install
 
-**Requirements:** Python 3.15+ (free-threaded **3.15t** recommended for `GroupEnv` threads), Gymnasium ≥ 1.4, NumPy ≥ 2.5.4 (NumPy is also pulled in by Gymnasium).
+**Requirements:** standard Python 3.15+, Gymnasium ≥ 1.4, NumPy ≥ 2.5.4 (NumPy is also pulled in by Gymnasium).
 
 ```bash
 pip install mouse-gym
 ```
 
-For development (free-threaded Python **3.15t** via uv):
+For development (standard Python **3.15** via uv):
 
 ```bash
 git clone https://github.com/micahr234/mouse-gym.git
@@ -68,7 +68,7 @@ env.close()
 
 - **Reward transforms.** `EnvConfig.reward_transform` runs before the output reaches the tracker, so summaries include transformed rewards, including reset-frame rewards. It receives `step_index`, `state`, `action`, `reward`, `terminated`, `truncated`, and `next_state`. `state` is the reset observation on the first reset frame, and the previous observation on subsequent frames. Reset-frame `reward` is `0.0`, with both flags false. See [03 — Rollout tracking](examples/03_metrics.ipynb).
 
-- **Grouped envs.** `GroupEnv` steps multiple `SingleEnv` instances in one `step()` call. Pass a list or tuple of actions (`action_space.sample()` returns a tuple) and get back a tuple of `(observation, reward, terminated, truncated, info)` results, one per env. Each `SingleEnv` belongs to one group. By default (`max_threads=0`) stepping is sequential on the calling thread; set `max_threads > 0` to distribute envs across that many worker threads. On free-threaded CPython (`3.15t`) those workers can run env steps in parallel. On a GIL-enabled interpreter, cheap Python envs such as CartPole are usually faster with `max_threads=0`. See [02 — Multiple envs](examples/02_multi_env.ipynb). `bench/bench_env.py` times `step` for `SingleEnv` and `GroupEnv` widths. To collect progress and summaries, keep one tracker per env and update each with its corresponding output.
+- **Grouped envs.** `GroupEnv` steps multiple environments and returns a tuple of Gymnasium results in input order. Use `make_group_env(configs, num_workers=4)` for persistent spawned processes, or `num_workers=0` (default) for inline execution. Workers build their own environments from configs. Actions, observations, and info use reusable shared-memory buffers; returned arrays stay valid after later steps and `close()`. This works with standard Python 3.15. Local factories and reward transforms are supported via cloudpickle. Keep one tracker per env in the caller. Close the group when finished, and guard process creation in scripts with `if __name__ == "__main__":`. Existing `SingleEnv` instances can be grouped inline; process groups require configs. Cheap envs may run faster inline because every group step still requires process synchronization. See [02 — Multiple envs](examples/02_multi_env.ipynb).
 
 ## Examples
 
@@ -76,7 +76,7 @@ The notebooks in [`examples/`](examples/) are the detailed reference for `EnvCon
 
 **[01 — Random rollout](examples/01_random_rollout.ipynb)** — Start here. Build an env from `EnvConfig`, run the reset-free `step()` loop, and inspect what comes back on each call: an action in, `(observation, reward, terminated, truncated, info)` out, `tracker.step_index`, and reset frames. Also covers `action_space` / `observation_space` and optional `env_fn` factories.
 
-**[02 — Multiple envs](examples/02_multi_env.ipynb)** — Combine several env instances with `make_group_env`. Step heterogeneous envs (different ids, spaces, and seeds) in one loop; optionally parallelize with `max_threads`; pass one action per env and read a tuple of Gymnasium results; use `env.names` and each env's spaces.
+**[02 — Multiple envs](examples/02_multi_env.ipynb)** — Combine several env instances with `make_group_env`. Step heterogeneous envs (different ids, spaces, and seeds) in one loop; optionally parallelize with `num_workers`; pass one action per env and read a tuple of Gymnasium results; use `env.names` and each env's spaces.
 
 **[03 — Rollout tracking](examples/03_metrics.ipynb)** — Collect returns and lengths with a separate tracker, clear completed summaries between evaluation windows, aggregate results across a `GroupEnv`, and shape rewards with `reward_transform`.
 
@@ -95,3 +95,16 @@ boundaries. `RepeatTaskTracker` treats those flags as task boundaries and
 uses the wrapped observation's inner episode flags to track inner progress.
 `RepeatTaskEnv` remains responsible for repeating episodes and choosing reset
 policy; the standalone tracker only interprets outputs and collects summaries.
+
+## Process stepping benchmark
+
+Run `.venv/bin/python bench/bench_processes.py --workload frozenlake --workers 0 4 --output /tmp/processes.json` with the examples extra installed. The benchmark uses fixed actions and seeds, checks output digests, and reports startup separately from steady stepping. It excludes action generation, tracking, and hashing from the step timer.
+
+On this machine, three repeats with eight environments and 1,000 measured group steps on standard Python 3.15.2 gave these median environment frames/second (including reset frames):
+
+| Workload | Inline | Previous four-thread implementation | Four processes + shared memory |
+|---|---:|---:|---:|
+| CartPole | 78,911 | 35,226 | 39,252 |
+| Repeated FrozenLake | 12,472 | 8,932 | 15,404 |
+
+Every mode produced the same output digest for each workload. Process startup took about 0.4 seconds. These are Mouse Gym stepping results, not end-to-end collection or transformer throughput; cheap envs can remain faster inline. Raw measurements and source hashes are in [bench/process_comparison.json](bench/process_comparison.json). The thread baseline used the previous source version; the current API only offers inline or process execution.

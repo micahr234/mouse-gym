@@ -12,13 +12,13 @@ Mouse Gym is actively developed and contributions are very welcome — whether t
 ## Development setup
 
 ```bash
-# Clone and create a free-threaded Python 3.15t virtual environment (via uv)
+# Clone and create a standard Python 3.15 virtual environment (via uv)
 git clone https://github.com/micahr234/mouse-gym.git
 cd mouse-gym
 source scripts/install.sh
 ```
 
-This installs the package in editable mode with the `dev` and `all` extras (`all` bundles `examples`, including Jupyter). Activate with `source .venv/bin/activate`. The install uses free-threaded CPython (`3.15t`) so `GroupEnv(max_threads>0)` can run constituent env steps in parallel.
+This installs the package in editable mode with the `dev` and `all` extras (`all` bundles `examples`, including Jupyter). Activate with `source .venv/bin/activate`. The install uses standard CPython (`3.15`). `GroupEnv(num_workers>0)` runs persistent spawned processes with shared-memory payloads.
 
 If you edit notebooks with a different tool (browser Jupyter, `nbconvert`, scripts), clear outputs before committing, e.g. `jupyter nbconvert --clear-output --inplace examples/*.ipynb`.
 
@@ -37,13 +37,14 @@ If you edit notebooks with a different tool (browser Jupyter, `nbconvert`, scrip
 Tests live under [`tests/`](tests/):
 
 - `test_smoke.py` — core rollout protocol (CartPole, custom `env_fn`, info passthrough, separate tracker integration)
+- `test_process.py` — process isolation, local factories, shared-memory resizing/lifetimes, remote errors, and cleanup
 - `test_tracker.py` — ordinary and repeated rollout boundaries, counters, and completed summaries
 
 If you add a new feature, add or extend a test under [`tests/`](tests/) and/or a notebook under [`examples/`](examples/).
 
 ## Code style
 
-- Python 3.15+ (free-threaded `3.15t` for threaded `GroupEnv`), type-annotated throughout.
+- Standard Python 3.15+, type-annotated throughout.
 - Follow the existing patterns: config in `config.py`, build in `build.py`, formatting in `format.py`, standalone tracking in `tracker.py`, public API in `__init__.py`. Third-party envs and Gymnasium wrappers are built by users via `env_fn` rather than bundled integrations. Implementation details belong in code comments and docstrings.
 - Avoid silent fallbacks — if a precondition isn't met, raise a clear error.
 - Comments should explain *why*, not *what*.

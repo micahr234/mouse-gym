@@ -1,13 +1,13 @@
 """Benchmark ``mouse_gym`` env ``step`` on CartPole-v1.
 
 Times ``action_space.sample`` + ``step`` for a ``SingleEnv`` and for
-``GroupEnv`` widths in ``--num-envs``, each with every ``--threads`` cap
+``GroupEnv`` widths in ``--num-envs``, each with every ``--workers`` cap
 (``0`` = all envs on the calling thread). Reports median / min / max wall
 time, first-call time, group-steps/second, and env-steps/second (group
 rate × width).
 
     .venv/bin/python bench/bench_env.py
-    .venv/bin/python bench/bench_env.py --num-envs 1 4 16 --threads 0 4
+    .venv/bin/python bench/bench_env.py --num-envs 1 4 16 --workers 0 4
 """
 
 from __future__ import annotations
@@ -59,14 +59,14 @@ def _bench_env(env: SingleEnv | GroupEnv, iters: int, label: str, width: int) ->
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--num-envs", nargs="+", type=int, default=[1, 4, 16, 64])
-    parser.add_argument("--threads", nargs="+", type=int, default=[0, 4])
+    parser.add_argument("--workers", nargs="+", type=int, default=[0, 4])
     parser.add_argument("--iters", type=int, default=200)
     args = parser.parse_args()
 
     if any(n < 1 for n in args.num_envs):
         raise SystemExit("--num-envs values must be >= 1")
-    if any(t < 0 for t in args.threads):
-        raise SystemExit("--threads values must be >= 0")
+    if any(t < 0 for t in args.workers):
+        raise SystemExit("--workers values must be >= 0")
 
     print("CartPole-v1")
 
@@ -77,10 +77,10 @@ def main() -> None:
 
     for n in args.num_envs:
         print(f"\n### GroupEnv n={n}")
-        for threads in args.threads:
+        for workers in args.workers:
             configs = [_config(i) for i in range(n)]
-            env = make_group_env(configs, max_threads=threads)
-            _bench_env(env, args.iters, f"max_threads={threads}", n)
+            env = make_group_env(configs, num_workers=workers)
+            _bench_env(env, args.iters, f"num_workers={workers}", n)
             env.close()
 
 

@@ -5,7 +5,7 @@
   "include": ["src/mouse_gym", "tests"],
   "extraPaths": [
     "src",
-    ".venv/lib/python3.15t/site-packages"
+    ".venv/lib/python3.15/site-packages"
   ],
   "reportPrivateImportUsage": false
 }

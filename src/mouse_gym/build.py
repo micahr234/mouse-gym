@@ -39,42 +39,27 @@ def make_env(config: EnvConfig) -> SingleEnv:
     return SingleEnv(_make_env_instance(config))
 
 
-def make_group_env(configs: list[EnvConfig], *, max_threads: int = 0) -> GroupEnv:
-    """Create a :class:`GroupEnv` from a list of :class:`EnvConfig` objects.
+def make_group_env(configs: list[EnvConfig], *, num_workers: int = 0) -> GroupEnv:
+    """Build a group inline (0) or in persistent spawned worker processes.
 
-    Each config creates one independent :class:`SingleEnv`. A :class:`SingleEnv`
-    belongs to at most one :class:`GroupEnv`. You can also construct
-    :class:`GroupEnv` from existing instances::
+    Each worker constructs and keeps its environments. Configs can contain
+    notebook-local factories and reward transforms. Action/result payloads use
+    reusable shared memory; output order always matches configuration order.
+    In scripts, create process groups under ``if __name__ == "__main__":``.
+    Close the group when finished to release workers and shared memory.
 
-        env_a = make_env(EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant"))
-        env_b = make_env(EnvConfig(id="CartPole-v1", seed=1, seed_mode="constant"))
-        big = GroupEnv([env_a, env_b])
-
-    ``max_threads`` controls how ``GroupEnv.step`` runs constituent envs:
-
-    - ``0`` (default) — step every env on the calling thread.
-    - ``> 0`` — distribute envs across up to ``max_threads`` worker threads
-      (capped at the number of envs). Output order matches input order.
-      On free-threaded CPython (``3.15t``) workers can run env steps in
-      parallel. On a GIL-enabled interpreter, cheap Python envs
-      (e.g. CartPole) are usually faster with ``max_threads=0``.
-
-    Usage::
+    Example::
 
         env = make_group_env([
-            EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant", name="cp-0"),
-            EnvConfig(id="CartPole-v1", seed=1, seed_mode="constant", name="cp-1"),
-            EnvConfig(id="MountainCar-v0", seed=2, seed_mode="constant", name="mc-0"),
-        ], max_threads=3)
-        for _ in range(1000):
+            EnvConfig(id="CartPole-v1", seed=i, seed_mode="stream")
+            for i in range(16)
+        ], num_workers=4)
+        try:
             outputs = env.step(env.action_space.sample())
-            cartpole_outs = outputs[:2]
-            mountaincar_outs = outputs[2:3]
+        finally:
+            env.close()
     """
-    return GroupEnv(
-        [SingleEnv(_make_env_instance(cfg)) for cfg in configs],
-        max_threads=max_threads,
-    )
+    return GroupEnv(configs, num_workers=num_workers)
 
 
 def _make_env_instance(config: EnvConfig) -> _EnvInstance:

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Literal
 
 import gymnasium as gym
 import numpy as np
+
+from mouse_gym.config import EnvConfig
+from mouse_gym.process import ProcessEnvs
 
 _RESET_SEED_BOUND = 2**32
 
@@ -254,146 +256,139 @@ class SingleEnv:
         self._env_instance.close()
 
 
+class _RemoteInstance(_EnvInstance):
+    """A SingleEnv's public operations routed to its owning process."""
+
+    def __init__(self, owner: ProcessEnvs, index: int, metadata: tuple) -> None:
+        self._owner, self._index = owner, index
+        self._name, self._action_space, self._observation_space = metadata
+        self._closed = False
+
+    def step(self, action: Any) -> tuple[Any, float, bool, bool, dict[str, Any]]:
+        return self._owner.call("step", {self._index: action})[self._index]
+
+    def render(self) -> Any:
+        return self._owner.call("render", {self._index: None})[self._index]
+
+    def close(self) -> None:
+        if not self._closed and not self._owner._closed:
+            self._owner.call("close_env", {self._index: None})
+        self._closed = True
+
+
 class GroupEnv:
-    """A container that steps a fixed sequence of :class:`SingleEnv` instances.
+    """Reset-free environments, stepped inline or in persistent processes.
 
-    Construct via :func:`mouse_gym.make_group_env` or directly:
-    ``GroupEnv([env_a, env_b, env_c], max_threads=4)``.
+    Pass EnvConfigs to build environments inside their workers. Existing
+    SingleEnv objects can be grouped inline (num_workers=0); live simulator
+    instances are never serialized to child processes. Use num_workers > 0
+    for spawned processes, capped at the number of environments.
 
-    Each :class:`SingleEnv` belongs to at most one :class:`GroupEnv`. Membership
-    is fixed at construction.
-
-    ``GroupEnv`` stores no rollout statistics. Callers can keep one separate
-    rollout tracker per env and update them from the returned output tuples.
-
-    ``step`` takes a list or tuple of actions, one per env, and returns a tuple
-    of ``(observation, reward, terminated, truncated, info)`` results.
-    ``action_space.sample()`` returns a tuple in that order. Heterogeneous
-    action spaces stay a sequence of per-env actions, because one array cannot
-    hold them.
-
-    With ``max_threads=0`` (default), ``step`` runs every env on the calling thread.
-    With ``max_threads > 0``, ``step`` distributes envs across up to ``max_threads``
-    worker threads (capped at ``num_envs``) and preserves output order. On
-    free-threaded CPython (``3.15t``) those workers can run env steps in
-    parallel. On a GIL-enabled interpreter, cheap Python envs are usually
-    faster with ``max_threads=0``.
+    Actions and outputs pass through reusable shared memory. Returned arrays
+    remain valid after subsequent calls and after close(). Output order matches
+    input order, including heterogeneous spaces. Keep separate rollout trackers
+    in the caller. Workers do not own trackers or model inference.
     """
 
-    def __init__(self, envs: Sequence[SingleEnv], *, max_threads: int = 0) -> None:
+    def __init__(self, envs: Sequence[SingleEnv] | Sequence[EnvConfig], *, num_workers: int = 0) -> None:
+        from mouse_gym.build import make_env
+
         if isinstance(envs, (str, bytes)) or not isinstance(envs, Sequence):
-            raise ValueError(
-                "envs must be a sequence of SingleEnv instances; "
-                f"got {type(envs).__name__}."
-            )
+            raise ValueError("envs must be a sequence of EnvConfig or SingleEnv instances")
         if not envs:
-            raise ValueError("GroupEnv requires at least one SingleEnv.")
-        if max_threads < 0:
-            raise ValueError(f"max_threads must be >= 0; got {max_threads}.")
-        if len({id(env) for env in envs}) != len(envs):
-            raise ValueError("GroupEnv envs must be unique; pass each SingleEnv once.")
-        for env in envs:
-            if env._group is not None:
-                raise ValueError(
-                    f"{env.name!r} is already in a GroupEnv. "
-                    "Each SingleEnv belongs to at most one group."
-                )
-        self._envs = list(envs)
-        for env in self._envs:
-            env._group = self
-        self._max_threads = max_threads
-        self._action_space = gym.spaces.Tuple(tuple(env.action_space for env in self._envs))
-        self._observation_space = gym.spaces.Tuple(
-            tuple(env.observation_space for env in self._envs)
-        )
-        self._executor: ThreadPoolExecutor | None = None
-        if max_threads > 0:
-            self._executor = ThreadPoolExecutor(
-                max_workers=min(max_threads, len(self._envs)),
-            )
+            raise ValueError("GroupEnv requires at least one environment")
+        if type(num_workers) is not int or num_workers < 0:
+            raise ValueError("num_workers must be a nonnegative integer")
+        configs = all(isinstance(env, EnvConfig) for env in envs)
+        if not configs and not all(isinstance(env, SingleEnv) for env in envs):
+            raise ValueError("Pass only EnvConfig objects or only SingleEnv objects")
+        if num_workers and not configs:
+            raise ValueError("Process workers require EnvConfig objects; live SingleEnv instances cannot be moved")
+        if not configs:
+            if len({id(env) for env in envs}) != len(envs):
+                raise ValueError("GroupEnv envs must be unique; pass each SingleEnv once")
+            for env in envs:
+                assert isinstance(env, SingleEnv)
+                if env._group is not None:
+                    raise ValueError(f"{env.name!r} is already in a GroupEnv")
+        self._num_workers = num_workers
+        self._workers: ProcessEnvs | None = None
+        self._envs: list[SingleEnv] = []
+        self._closed = False
+        try:
+            if num_workers:
+                self._workers = ProcessEnvs(envs, num_workers)
+                self._envs = [SingleEnv(_RemoteInstance(self._workers, i, self._workers.metadata[i]))
+                              for i in range(len(envs))]
+            else:
+                for env in envs:
+                    self._envs.append(make_env(env) if isinstance(env, EnvConfig) else env)
+            for env in self._envs:
+                env._group = self
+            self._action_space = gym.spaces.Tuple(tuple(env.action_space for env in self._envs))
+            self._observation_space = gym.spaces.Tuple(tuple(env.observation_space for env in self._envs))
+        except BaseException:
+            self.close()
+            raise
 
     @property
     def envs(self) -> tuple[SingleEnv, ...]:
-        """The constituent :class:`SingleEnv` instances, in construction order."""
+        """Constituent env handles in order; process handles route calls remotely."""
         return tuple(self._envs)
 
     @property
     def num_envs(self) -> int:
-        """Number of constituent env instances."""
         return len(self._envs)
 
     @property
-    def max_threads(self) -> int:
-        """Worker-thread cap for ``step``; ``0`` means run on the calling thread."""
-        return self._max_threads
+    def num_workers(self) -> int:
+        """Requested process cap; zero runs inline."""
+        return self._num_workers
 
     @property
     def names(self) -> tuple[str, ...]:
-        """Names of all constituent env instances."""
-        return tuple(e.name for e in self._envs)
+        return tuple(env.name for env in self._envs)
 
     @property
     def action_space(self) -> gym.spaces.Tuple:
-        """Gymnasium tuple action space, one subspace per env instance.
-
-        Built once, when the group is created.
-        """
         return self._action_space
 
     @property
     def observation_space(self) -> gym.spaces.Tuple:
-        """Gymnasium tuple observation space, one subspace per env instance.
-
-        Built once, when the group is created.
-        """
         return self._observation_space
 
-    def step(
-        self, actions: Sequence[Any]
-    ) -> tuple[tuple[Any, float, bool, bool, dict[str, Any]], ...]:
-        """Step all env instances and return one Gymnasium tuple per env.
-
-        ``actions[i]`` is the action for env instance ``i``. A list or tuple is
-        accepted; ``action_space.sample()`` returns a tuple. Returns a tuple of
-        ``(observation, reward, terminated, truncated, info)``. On the
-        first call and on any call immediately after ``terminated`` or
-        ``truncated``, the corresponding action is ignored and a reset frame
-        is returned instead.
-
-        With ``max_threads=0``, steps run sequentially on the calling thread. With
-        ``max_threads > 0``, steps are distributed across worker threads; results stay
-        index-aligned with ``actions``.
-        """
+    def step(self, actions: Sequence[Any]) -> tuple[tuple[Any, float, bool, bool, dict[str, Any]], ...]:
+        """Step all envs, preserving reset frames and construction order."""
+        if self._closed:
+            raise RuntimeError("GroupEnv is closed")
         if isinstance(actions, (str, bytes)) or not isinstance(actions, (list, tuple)):
-            raise ValueError(
-                "actions must be a list or tuple with one action per env instance; "
-                f"got {type(actions).__name__}."
-            )
+            raise ValueError("actions must be a list or tuple with one action per env instance")
         if len(actions) != self.num_envs:
-            raise ValueError(
-                f"actions must contain exactly {self.num_envs} entries, got {len(actions)}."
-            )
-        if self._executor is None:
-            return tuple(e.step(action) for e, action in zip(self._envs, actions))
-        return tuple(self._executor.map(_step_env, self._envs, actions))
+            raise ValueError(f"actions must contain exactly {self.num_envs} entries, got {len(actions)}")
+        if self._workers is None:
+            return tuple(env.step(action) for env, action in zip(self._envs, actions))
+        outputs = self._workers.call("step", dict(enumerate(actions)))
+        return tuple(outputs[i] for i in range(self.num_envs))
 
     def render(self) -> tuple[Any, ...]:
-        """Return each env's ``render()`` result, in env order."""
-        return tuple(e.render() for e in self._envs)
+        if self._closed:
+            raise RuntimeError("GroupEnv is closed")
+        if self._workers is None:
+            return tuple(env.render() for env in self._envs)
+        outputs = self._workers.call("render", dict.fromkeys(range(self.num_envs)))
+        return tuple(outputs[i] for i in range(self.num_envs))
 
     def close(self) -> None:
-        """Close all env instances and shut down any worker threads."""
-        try:
-            for e in self._envs:
-                e.close()
-        finally:
-            if self._executor is not None:
-                self._executor.shutdown(wait=True)
-                self._executor = None
+        """Close environments and release processes and shared-memory slots."""
+        if self._closed:
+            return
+        self._closed = True
+        if self._workers is not None:
+            self._workers.close()
+        else:
+            for env in self._envs:
+                env.close()
 
-
-def _step_env(
-    env: SingleEnv, action: Any
-) -> tuple[Any, float, bool, bool, dict[str, Any]]:
-    """Step one env; module-level helper for :class:`ThreadPoolExecutor.map`."""
-    return env.step(action)
+    def __del__(self):
+        if hasattr(self, "_closed"):
+            self.close()

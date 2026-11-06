@@ -820,23 +820,23 @@ def test_tracker_accumulates_and_clears() -> None:
         env.close()
 
 
-def test_group_env_max_threads_default_is_main_thread() -> None:
+def test_group_env_num_workers_default_is_main_thread() -> None:
     env = make_group_env([EnvConfig(id="CartPole-v1", seed=i, seed_mode="constant") for i in range(3)])
     try:
-        assert env.max_threads == 0
+        assert env.num_workers == 0
         outputs = _rollout(env, steps=3)
         assert len(outputs) == 3
     finally:
         env.close()
 
 
-def test_group_env_max_threads_distributes_steps() -> None:
+def test_group_env_num_workers_distributes_steps() -> None:
     env = make_group_env(
         [EnvConfig(id="CartPole-v1", seed=i, seed_mode="constant", name=f"cp-{i}") for i in range(4)],
-        max_threads=2,
+        num_workers=2,
     )
     try:
-        assert env.max_threads == 2
+        assert env.num_workers == 2
         outputs = _rollout(env, steps=5)
         assert len(outputs) == 4
         assert env.names == ("cp-0", "cp-1", "cp-2", "cp-3")
@@ -849,33 +849,33 @@ def test_group_env_max_threads_distributes_steps() -> None:
         env.close()
 
 
-def test_group_env_max_threads_matches_sequential_contract() -> None:
-    """Threaded and sequential groups with the same seeds produce matching trajectories."""
+def test_group_env_num_workers_matches_sequential_contract() -> None:
+    """Process and sequential groups with the same seeds produce matching trajectories."""
     cfgs = [
         EnvConfig(id="CartPole-v1", seed=i, seed_mode="constant", kwargs={"max_episode_steps": 8})
         for i in range(3)
     ]
-    sequential = make_group_env(cfgs, max_threads=0)
-    threaded = make_group_env(cfgs, max_threads=3)
+    sequential = make_group_env(cfgs, num_workers=0)
+    processed = make_group_env(cfgs, num_workers=3)
     try:
         for _ in range(20):
             actions = sequential.action_space.sample()
             seq_out = sequential.step(actions)
-            thr_out = threaded.step(actions)
-            assert len(seq_out) == len(thr_out)
-            for i, (seq, thr) in enumerate(zip(seq_out, thr_out)):
+            proc_out = processed.step(actions)
+            assert len(seq_out) == len(proc_out)
+            for i, (seq, thr) in enumerate(zip(seq_out, proc_out)):
                 assert seq[2] == thr[2]
                 assert seq[3] == thr[3]
                 np.testing.assert_array_equal(seq[0], thr[0])
                 assert seq[1] == thr[1]
     finally:
         sequential.close()
-        threaded.close()
+        processed.close()
 
 
-def test_group_env_rejects_negative_max_threads() -> None:
-    with pytest.raises(ValueError, match="max_threads"):
-        make_group_env([EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant")], max_threads=-1)
+def test_group_env_rejects_negative_num_workers() -> None:
+    with pytest.raises(ValueError, match="num_workers"):
+        make_group_env([EnvConfig(id="CartPole-v1", seed=0, seed_mode="constant")], num_workers=-1)
 
 
 def test_group_env_rejects_shared_or_repeated_envs() -> None:
@@ -964,27 +964,29 @@ def test_render_returns_the_env_value() -> None:
         group.close()
 
 
-@pytest.mark.parametrize("max_threads", [0, 2])
-def test_executed_action_metadata_covers_outer_and_inner_resets(max_threads):
+@pytest.mark.parametrize("num_workers", [0, 2])
+def test_executed_action_metadata_covers_outer_and_inner_resets(num_workers):
     RepeatTaskEnv = pytest.importorskip("repeat_task_gym").RepeatTaskEnv
     calls = []
     def transform(**transition):
         calls.append(transition["action"])
-        return transition["reward"]
+        return transition["reward"] + (10 if transition["action"] is None else transition["action"])
     env = make_group_env([
         EnvConfig(seed=i, seed_mode="stream", name=str(i),
                   env_fn=lambda: RepeatTaskEnv(ImmediateTerminateEnv(), max_task_episodes=2),
                   reward_transform=transform)
         for i in range(2)
-    ], max_threads=max_threads)
+    ], num_workers=num_workers)
     try:
         for inputs, expected in [([99, None], [None, None]), ([0, 1], [0, 1]),
                                  ([None, None], [None, None]), ([1, 0], [1, 0]),
                                  ([None, 99], [None, None])]:
             outputs = env.step(inputs)
             assert [out[-1]["executed_action"] for out in outputs] == expected
-        assert calls.count(None) == 6
-        assert calls.count(0) == calls.count(1) == 2
+            assert [out[1] for out in outputs] == [10 if action is None else 1 + action for action in expected]
+        if num_workers == 0:
+            assert calls.count(None) == 6
+            assert calls.count(0) == calls.count(1) == 2
     finally:
         env.close()
 
@@ -1000,14 +1002,14 @@ def test_plain_env_executed_action_records_reset_and_real_step():
         env.close()
 
 
-@pytest.mark.parametrize("max_threads", [0, 2])
-def test_separate_trackers_collect_repeated_and_plain_group_outputs(max_threads):
+@pytest.mark.parametrize("num_workers", [0, 2])
+def test_separate_trackers_collect_repeated_and_plain_group_outputs(num_workers):
     RepeatTaskEnv = pytest.importorskip("repeat_task_gym").RepeatTaskEnv
     env = make_group_env([
         EnvConfig(env_fn=ImmediateTerminateEnv),
         EnvConfig(name="repeat", env_fn=lambda: RepeatTaskEnv(
             ImmediateTerminateEnv(), max_task_episodes=2)),
-    ], max_threads=max_threads)
+    ], num_workers=num_workers)
     plain = RolloutTracker()
     repeated = RepeatTaskTracker()
     trackers = (plain, repeated)
